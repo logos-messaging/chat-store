@@ -20,11 +20,11 @@ COPY Cargo.toml Cargo.lock ./
 RUN mkdir src \
     && echo "fn main() {}" > src/main.rs \
     && cargo build --release --locked \
-    && rm -rf src target/release/deps/keypackage_registry* target/release/keypackage-registry
+    && rm -rf src target/release/deps/chat_store* target/release/chat-store
 
 # Now build the real binary; dependency artifacts above are reused.
 COPY src ./src
-RUN cargo build --release --locked --bin keypackage-registry
+RUN cargo build --release --locked --bin chat-store
 
 ########################################
 # Runtime stage
@@ -35,7 +35,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/target/release/keypackage-registry /usr/local/bin/keypackage-registry
+COPY --from=builder /app/target/release/chat-store /usr/local/bin/chat-store
 
 # Matches the default --bind 0.0.0.0:8080.
 EXPOSE 8080
@@ -44,5 +44,5 @@ EXPOSE 8080
 VOLUME ["/data"]
 ENV RUST_LOG=info
 
-ENTRYPOINT ["keypackage-registry"]
-CMD ["--bind", "0.0.0.0:8080", "--db", "/data/keypackage-registry.db"]
+ENTRYPOINT ["chat-store"]
+CMD ["--bind", "0.0.0.0:8080", "--db", "/data/chat-store.db"]

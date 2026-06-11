@@ -24,14 +24,14 @@ use tracing_subscriber::EnvFilter;
 use store::Store;
 
 #[derive(Parser, Debug)]
-#[command(name = "keypackage-registry", about = "Testnet KeyPackage Registry")]
+#[command(name = "chat-store", about = "Testnet Chat Store (KeyPackage + account directory)")]
 struct Cli {
     /// Address to bind the HTTP server.
     #[arg(long, default_value = "0.0.0.0:8080")]
     bind: SocketAddr,
 
     /// SQLite database path.
-    #[arg(long, default_value = "keypackage-registry.db")]
+    #[arg(long, default_value = "chat-store.db")]
     db: PathBuf,
 
     /// Maximum number of bundles retained per account_id.
@@ -80,7 +80,7 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(cli.bind)
         .await
         .with_context(|| format!("failed to bind {}", cli.bind))?;
-    tracing::info!("keypackage-registry listening on {}", cli.bind);
+    tracing::info!("chat-store listening on {}", cli.bind);
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await

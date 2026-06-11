@@ -3,12 +3,12 @@
 [workspace]
 
 [package]
-name = "keypackage-registry"
+name = "chat-store"
 version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "keypackage-registry"
+name = "chat-store"
 path = "src/main.rs"
 
 [dependencies]

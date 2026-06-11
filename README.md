@@ -1,8 +1,9 @@
 # Chat Store
 
-Persistence for group-chat users' key packages — the **keypackage-registry**
-HTTP service, extracted from [libchat](https://github.com/logos-messaging/libchat)
-so it can be deployed on its own.
+Persistence for group-chat users' key packages — the **chat-store** HTTP service
+(formerly `keypackage-registry`), extracted from
+[libchat](https://github.com/logos-messaging/libchat) so it can be deployed on
+its own.
 
 Standalone HTTP service that caches MLS KeyPackages keyed by **`device_id`**, so a
 client can fetch a contact's keypackage without an out-of-band exchange.
@@ -46,13 +47,13 @@ exactly one way — no delimiter, even though `key_package` is arbitrary bytes.
 
 ```bash
 cargo build --release
-./target/release/keypackage-registry   # binds 0.0.0.0:8080, db ./keypackage-registry.db
+./target/release/chat-store   # binds 0.0.0.0:8080, db ./chat-store.db
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--bind <addr>` | `0.0.0.0:8080` | HTTP bind address |
-| `--db <path>` | `keypackage-registry.db` | SQLite database path |
+| `--db <path>` | `chat-store.db` | SQLite database path |
 | `--max-per-identity <n>` | `100` | Bundles retained per `device_id` |
 | `--retention-days <n>` | `30` | Drop bundles older than this |
 | `--prune-interval-secs <n>` | `3600` | How often the prune task runs |
@@ -69,7 +70,7 @@ docker build -t chat-store .
 docker run --rm -p 8080:8080 -v chat-store-data:/data chat-store
 ```
 
-The image runs the binary with `--bind 0.0.0.0:8080 --db /data/keypackage-registry.db`
+The image runs the binary with `--bind 0.0.0.0:8080 --db /data/chat-store.db`
 by default; override the `CMD` to change flags, e.g.:
 
 ```bash
