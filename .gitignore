@@ -1,0 +1,10 @@
+# Rust build artifacts
+/target
+
+# Local SQLite databases created at runtime
+*.db
+*.db-shm
+*.db-wal
+
+# Editor / OS noise
+.DS_Store
