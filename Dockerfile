@@ -5,20 +5,21 @@
 ########################################
 FROM rust:1-bookworm AS builder
 
-# sqlx's SQLite driver bundles libsqlite3 and compiles it with the C toolchain
-# already in the base image — no sqlcipher, no OpenSSL, no extra apt packages.
 WORKDIR /app
 
-# Build dependencies first against a stub binary so the (slow) SQLCipher/OpenSSL
-# compilation is cached and only re-runs when Cargo.toml/Cargo.lock change.
+# Build dependencies first against a stub binary so the (slow) dependency
+# compilation — bundled libsqlite3 and the async stack — is cached and only
+# re-runs when Cargo.toml/Cargo.lock change.
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir src \
     && echo "fn main() {}" > src/main.rs \
     && cargo build --release --locked \
     && rm -rf src target/release/deps/chat_store* target/release/chat-store
 
-# Now build the real binary; dependency artifacts above are reused.
+# Now build the real binary; dependency artifacts above are reused. `migrations/`
+# is needed at build time too — `sqlx::migrate!()` embeds the .sql files.
 COPY src ./src
+COPY migrations ./migrations
 RUN cargo build --release --locked --bin chat-store
 
 ########################################
