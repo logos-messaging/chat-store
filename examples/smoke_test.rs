@@ -71,7 +71,7 @@ fn test_keypackage(client: &Client, base: &str) -> Result<()> {
 
 fn test_account(client: &Client, base: &str) -> Result<()> {
     let key = signing_key(2);
-    let account_id = pub_hex(&key);
+    let account_pub = pub_hex(&key);
 
     // The account payload is NOT arbitrary: it must start with the domain prefix,
     // a version byte, and an 8-byte little-endian lamport so the server can run
@@ -82,7 +82,7 @@ fn test_account(client: &Client, base: &str) -> Result<()> {
     payload.extend_from_slice(&lamport.to_le_bytes());
 
     let body = json!({
-        "account_id": account_id,
+        "account_pub": account_pub,
         "payload": BASE64.encode(&payload),
         "signature": BASE64.encode(key.sign(&payload).to_bytes()),
     });
@@ -93,7 +93,7 @@ fn test_account(client: &Client, base: &str) -> Result<()> {
         .send()?;
     println!("POST /v0/account           -> {} (expect 204)", resp.status());
 
-    let resp = client.get(format!("{base}/v0/account/{account_id}")).send()?;
+    let resp = client.get(format!("{base}/v0/account/{account_pub}")).send()?;
     println!(
         "GET  /v0/account/<id>      -> {} (expect 200) {}",
         resp.status(),

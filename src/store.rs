@@ -19,7 +19,7 @@ pub struct StoredKeyPackageBundle {
 }
 
 /// A signed bundle associating an account with its set of device (LocalIdentity)
-/// public keys. The server stores exactly one blob per `account_id`; a newer
+/// public keys. The server stores exactly one blob per `account_pub`; a newer
 /// bundle replaces the old one only when its lamport is strictly higher (see
 /// [`Store::upsert_account`]). `payload` is otherwise opaque to the server: it
 /// encodes a lamport-timestamped list of device pubkeys signed by the account
@@ -106,7 +106,7 @@ impl Store {
         Ok(row)
     }
 
-    /// Upsert the signed device-list bundle for `account_id`. The server stores
+    /// Upsert the signed device-list bundle for `account_pub`. The server stores
     /// exactly one blob per account.
     ///
     /// Anti-replay: `lamport` is the monotonic version read from `bundle.payload`
@@ -123,7 +123,7 @@ impl Store {
     /// `bundle` is ignored; the store stamps the row with the current time.
     pub async fn upsert_account(
         &self,
-        account_id: &str,
+        account_pub: &str,
         lamport: u64,
         bundle: &StoredAccountBundle,
     ) -> Result<bool> {
@@ -131,9 +131,9 @@ impl Store {
 
         let mut tx = self.pool.begin().await?;
         let existing_lamport = sqlx::query_scalar::<_, Vec<u8>>(
-            "SELECT payload FROM account_bundles WHERE account_id = ?",
+            "SELECT payload FROM account_bundles WHERE account_pub = ?",
         )
-        .bind(account_id)
+        .bind(account_pub)
         .fetch_optional(&mut *tx)
         .await?
         .and_then(|payload| payload_lamport(&payload));
@@ -144,14 +144,14 @@ impl Store {
             return Ok(false);
         }
         sqlx::query(
-            "INSERT INTO account_bundles (account_id, updated_at, payload, signature)
+            "INSERT INTO account_bundles (account_pub, updated_at, payload, signature)
              VALUES (?, ?, ?, ?)
-             ON CONFLICT(account_id) DO UPDATE SET
+             ON CONFLICT(account_pub) DO UPDATE SET
                updated_at = excluded.updated_at,
                payload    = excluded.payload,
                signature  = excluded.signature",
         )
-        .bind(account_id)
+        .bind(account_pub)
         .bind(updated_at)
         .bind(&bundle.payload)
         .bind(&bundle.signature)
@@ -161,13 +161,13 @@ impl Store {
         Ok(true)
     }
 
-    /// Returns the stored bundle for `account_id`, or `None` if unknown.
-    pub async fn get_account(&self, account_id: &str) -> Result<Option<StoredAccountBundle>> {
+    /// Returns the stored bundle for `account_pub`, or `None` if unknown.
+    pub async fn get_account(&self, account_pub: &str) -> Result<Option<StoredAccountBundle>> {
         let row = sqlx::query_as::<_, StoredAccountBundle>(
             "SELECT payload, signature, updated_at FROM account_bundles
-             WHERE account_id = ?",
+             WHERE account_pub = ?",
         )
-        .bind(account_id)
+        .bind(account_pub)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row)

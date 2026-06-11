@@ -12,9 +12,9 @@ it intentionally has no overlap with the rest of libchat (axum + rusqlite only).
 
 `device_id` is the hex-encoded 32-byte Ed25519 verifying key of a device.
 
-It also runs a minimal **account service**: one signed blob per **`account_id`**
+It also runs a minimal **account service**: one signed blob per **`account_pub`**
 mapping an Account to its set of device (LocalIdentity) public keys, so clients
-can invite every LocalIdentity of an account. `account_id` is the hex-encoded
+can invite every LocalIdentity of an account. `account_pub` is the hex-encoded
 32-byte Ed25519 AccountAddress verifying key. See
 [Account device-list endpoints](#account-device-list-endpoints).
 
@@ -112,9 +112,9 @@ fails verification must be treated as not found.
 
 ## Account device-list endpoints
 
-The account service stores **exactly one blob per `account_id`** mapping an
+The account service stores **exactly one blob per `account_pub`** mapping an
 Account to its LocalIdentity device keys. Same trust model as keypackages: the
-server verifies `signature` over `payload` under `account_id`'s key
+server verifies `signature` over `payload` under `account_pub`'s key
 (proof-of-possession), and consumers MUST re-verify on retrieve. Clients encode
 a lamport-timestamped list of device public keys in `payload`; the rest of the
 payload stays opaque to the server.
@@ -132,9 +132,9 @@ Upsert the device-list bundle for an account; replaces any previous value.
 
 ```json
 {
-  "account_id": "hex(32-byte ed25519 AccountAddress verifying key)",
-  "payload":    "base64(opaque signed bytes: lamport-ts + device pubkeys)",
-  "signature":  "base64(64-byte ed25519 signature over payload by the account key)"
+  "account_pub": "hex(32-byte ed25519 AccountAddress verifying key)",
+  "payload":     "base64(opaque signed bytes: lamport-ts + device pubkeys)",
+  "signature":   "base64(64-byte ed25519 signature over payload by the account key)"
 }
 ```
 
@@ -142,7 +142,7 @@ Returns `204` on success, `400` on malformed input or a signature that fails to
 verify, and `409` when the bundle's lamport is not newer than the stored one
 (replay / stale publish).
 
-### `GET /v0/account/{account_id}`
+### `GET /v0/account/{account_pub}`
 
 Returns the stored bundle for that account, or `404`:
 
@@ -155,12 +155,12 @@ Returns the stored bundle for that account, or `404`:
 ```
 
 `updated_at` is the server's last-upsert time in Unix ms. Consumers verify
-`signature` over `payload` under `account_id`'s key, then decode the device list.
+`signature` over `payload` under `account_pub`'s key, then decode the device list.
 
 ## Storage & retention
 
 Two SQLite tables: `keypackages` keyed by `device_id`, and `account_bundles`
-(one row per `account_id`). A background task runs every `--prune-interval-secs`,
+(one row per `account_pub`). A background task runs every `--prune-interval-secs`,
 dropping keypackage bundles older than `--retention-days` (keeping at most
 `--max-per-identity` per `device_id`) and dropping account bundles not refreshed
 within `--retention-days`. The schema is an internal detail and may change.

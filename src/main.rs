@@ -7,7 +7,7 @@
 //!   POST /v0/keypackage             — submit a signed keypackage bundle
 //!   GET  /v0/keypackage/{device_id} — fetch the latest stored keypackage bundle
 //!   POST /v0/account                — upsert a signed account device-list bundle
-//!   GET  /v0/account/{account_id}   — fetch the account device-list bundle
+//!   GET  /v0/account/{account_pub}  — fetch the account device-list bundle
 
 mod handlers;
 mod store;
@@ -34,7 +34,7 @@ struct Cli {
     #[arg(long, default_value = "chat-store.db")]
     db: PathBuf,
 
-    /// Maximum number of bundles retained per account_id.
+    /// Maximum number of keypackage bundles retained per device_id.
     #[arg(long, default_value_t = 100)]
     max_per_identity: usize,
 

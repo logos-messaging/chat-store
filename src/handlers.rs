@@ -42,7 +42,7 @@ pub fn router(store: Arc<Store>) -> Router {
         .route("/v0/keypackage", post(submit))
         .route("/v0/keypackage/:device_id", get(fetch))
         .route("/v0/account", post(submit_account))
-        .route("/v0/account/:account_id", get(fetch_account))
+        .route("/v0/account/:account_pub", get(fetch_account))
         .with_state(store)
 }
 
@@ -110,12 +110,12 @@ async fn fetch(
 /// to encode a lamport-timestamped list of device (LocalIdentity) Ed25519
 /// public keys inside it so that consumers can detect stale bundles. The server
 /// only verifies that `signature` is a valid Ed25519 signature over `payload`
-/// made by the key identified by `account_id`.
+/// made by the key identified by `account_pub`.
 #[derive(Debug, Deserialize)]
 pub struct SubmitAccountRequest {
     /// Hex of the 32-byte Ed25519 account (AccountAddress) verifying key.
     /// Acts as both the storage key and the verification key.
-    pub account_id: String,
+    pub account_pub: String,
     /// base64 of the opaque signed payload (lamport-ts + device pubkeys, etc.).
     pub payload: String,
     /// base64 of the 64-byte Ed25519 signature over `payload` made by the
@@ -136,16 +136,16 @@ pub struct FetchAccountResponse {
 /// `POST /v0/account` — upsert a signed device-list bundle for an account.
 ///
 /// The server verifies the Ed25519 signature and then stores exactly one blob
-/// per `account_id`, replacing any previous value. Clients should re-publish
+/// per `account_pub`, replacing any previous value. Clients should re-publish
 /// whenever they add or rotate LocalIdentities.
 async fn submit_account(
     State(store): State<Arc<Store>>,
     Json(req): Json<SubmitAccountRequest>,
 ) -> Result<StatusCode, ApiError> {
-    let account_pubkey: [u8; 32] = hex::decode(&req.account_id)
+    let account_pubkey: [u8; 32] = hex::decode(&req.account_pub)
         .ok()
         .and_then(|b| b.try_into().ok())
-        .ok_or_else(|| ApiError::bad("account_id: must be hex of a 32-byte key"))?;
+        .ok_or_else(|| ApiError::bad("account_pub: must be hex of a 32-byte key"))?;
     let payload = BASE64
         .decode(&req.payload)
         .map_err(|_| ApiError::bad("payload: not valid base64"))?;
@@ -156,7 +156,7 @@ async fn submit_account(
         .ok_or_else(|| ApiError::bad("signature: must be base64 of 64 bytes"))?;
 
     let verifying_key = VerifyingKey::from_bytes(&account_pubkey)
-        .map_err(|_| ApiError::bad("account_id: not a valid ed25519 key"))?;
+        .map_err(|_| ApiError::bad("account_pub: not a valid ed25519 key"))?;
     verifying_key
         .verify_strict(&payload, &Signature::from_bytes(&signature))
         .map_err(|_| ApiError::bad("signature: verification failed"))?;
@@ -169,7 +169,7 @@ async fn submit_account(
 
     let applied = store
         .upsert_account(
-            &req.account_id,
+            &req.account_pub,
             lamport,
             &StoredAccountBundle {
                 payload,
@@ -187,20 +187,20 @@ async fn submit_account(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `GET /v0/account/:account_id` — fetch the device-list bundle for an account.
+/// `GET /v0/account/:account_pub` — fetch the device-list bundle for an account.
 ///
 /// Returns the latest published bundle so consumers can verify the
 /// account signature and decode the list of LocalIdentity keys themselves.
 async fn fetch_account(
     State(store): State<Arc<Store>>,
-    Path(account_id): Path<String>,
+    Path(account_pub): Path<String>,
 ) -> Result<Json<FetchAccountResponse>, ApiError> {
     let Some(bundle) = store
-        .get_account(&account_id)
+        .get_account(&account_pub)
         .await
         .map_err(ApiError::internal)?
     else {
-        return Err(ApiError::not_found("no account bundle for account_id"));
+        return Err(ApiError::not_found("no account bundle for account_pub"));
     };
     Ok(Json(FetchAccountResponse {
         payload: BASE64.encode(&bundle.payload),
