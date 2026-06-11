@@ -57,7 +57,11 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    let store = Arc::new(Store::open(&cli.db).context("failed to open store")?);
+    let store = Arc::new(
+        Store::open(&cli.db)
+            .await
+            .context("failed to open store")?,
+    );
 
     let prune_store = store.clone();
     let max_per_id = cli.max_per_identity;
@@ -67,10 +71,10 @@ async fn main() -> Result<()> {
         let mut ticker = tokio::time::interval(interval);
         loop {
             ticker.tick().await;
-            if let Err(e) = prune_store.prune_key_packages(max_per_id, retention) {
+            if let Err(e) = prune_store.prune_key_packages(max_per_id, retention).await {
                 tracing::warn!("prune (keypackages) failed: {e}");
             }
-            if let Err(e) = prune_store.prune_accounts(retention) {
+            if let Err(e) = prune_store.prune_accounts(retention).await {
                 tracing::warn!("prune (accounts) failed: {e}");
             }
         }

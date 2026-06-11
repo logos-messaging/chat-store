@@ -5,13 +5,8 @@
 ########################################
 FROM rust:1-bookworm AS builder
 
-# rusqlite's `bundled-sqlcipher-vendored-openssl` feature compiles SQLCipher and
-# a vendored OpenSSL from source: the C toolchain ships in the base image, but
-# the OpenSSL build also needs perl + make.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends perl make \
-    && rm -rf /var/lib/apt/lists/*
-
+# sqlx's SQLite driver bundles libsqlite3 and compiles it with the C toolchain
+# already in the base image — no sqlcipher, no OpenSSL, no extra apt packages.
 WORKDIR /app
 
 # Build dependencies first against a stub binary so the (slow) SQLCipher/OpenSSL

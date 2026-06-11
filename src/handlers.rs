@@ -82,6 +82,7 @@ async fn submit(
                 signature: signature.to_vec(),
             },
         )
+        .await
         .map_err(ApiError::internal)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -90,7 +91,11 @@ async fn fetch(
     State(store): State<Arc<Store>>,
     Path(device_id): Path<String>,
 ) -> Result<Json<FetchResponse>, ApiError> {
-    let Some(bundle) = store.latest(&device_id).map_err(ApiError::internal)? else {
+    let Some(bundle) = store
+        .latest(&device_id)
+        .await
+        .map_err(ApiError::internal)?
+    else {
         return Err(ApiError::not_found("no keypackage for device"));
     };
     Ok(Json(FetchResponse {
@@ -172,6 +177,7 @@ async fn submit_account(
                 updated_at: 0, // filled in by store
             },
         )
+        .await
         .map_err(ApiError::internal)?;
     if !applied {
         return Err(ApiError::conflict(
@@ -189,7 +195,11 @@ async fn fetch_account(
     State(store): State<Arc<Store>>,
     Path(account_id): Path<String>,
 ) -> Result<Json<FetchAccountResponse>, ApiError> {
-    let Some(bundle) = store.get_account(&account_id).map_err(ApiError::internal)? else {
+    let Some(bundle) = store
+        .get_account(&account_id)
+        .await
+        .map_err(ApiError::internal)?
+    else {
         return Err(ApiError::not_found("no account bundle for account_id"));
     };
     Ok(Json(FetchAccountResponse {

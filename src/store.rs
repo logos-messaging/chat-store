@@ -1,15 +1,15 @@
 use std::path::Path;
-use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
-use rusqlite::{Connection, OptionalExtension, params};
+use sqlx::SqlitePool;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 
 pub struct Store {
-    conn: Mutex<Connection>,
+    pool: SqlitePool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct StoredKeyPackageBundle {
     /// The canonical signed payload, stored verbatim and returned as-is so
     /// consumers verify over the exact bytes that were signed.
@@ -24,7 +24,7 @@ pub struct StoredKeyPackageBundle {
 /// [`Store::upsert_account`]). `payload` is otherwise opaque to the server: it
 /// encodes a lamport-timestamped list of device pubkeys signed by the account
 /// key so that consumers can verify the full device set.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct StoredAccountBundle {
     /// The canonical signed payload, returned verbatim so consumers can verify
     /// the account signature over the exact bytes.
@@ -36,70 +36,73 @@ pub struct StoredAccountBundle {
 }
 
 impl Store {
-    pub fn open(path: &Path) -> Result<Self> {
-        // Create the db's parent directory if the caller pointed at a nested
-        // path (e.g. `tmp/registry.db`); SQLite won't create it and errors with
-        // "unable to open database file" otherwise.
-        if let Some(parent) = path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("create db directory {}", parent.display()))?;
+    pub async fn open(path: &Path) -> Result<Self> {
+        let is_memory = path == Path::new(":memory:");
+
+        let mut options = SqliteConnectOptions::new()
+            .create_if_missing(true)
+            .busy_timeout(Duration::from_secs(5));
+
+        if is_memory {
+            options = options.filename(":memory:");
+        } else {
+            // Create the db's parent directory if the caller pointed at a nested
+            // path (e.g. `tmp/registry.db`); SQLite won't create it and errors
+            // with "unable to open database file" otherwise.
+            if let Some(parent) = path.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("create db directory {}", parent.display()))?;
+            }
+            options = options.filename(path).journal_mode(SqliteJournalMode::Wal);
         }
-        let conn = Connection::open(path).context("open sqlite")?;
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS keypackages (
-                device_id     TEXT NOT NULL,
-                received_at   INTEGER NOT NULL,
-                payload       BLOB NOT NULL,
-                signature     BLOB NOT NULL,
-                PRIMARY KEY (device_id, received_at)
-            );
-            -- One row per account; newer upserts replace the existing row.
-            CREATE TABLE IF NOT EXISTS account_bundles (
-                account_id   TEXT    NOT NULL PRIMARY KEY,
-                updated_at   INTEGER NOT NULL,
-                payload      BLOB    NOT NULL,
-                signature    BLOB    NOT NULL
-            );",
-        )?;
-        Ok(Self {
-            conn: Mutex::new(conn),
-        })
+
+        // A shared in-memory database only lives as long as a connection is open,
+        // so pin the `:memory:` pool to a single reused connection; file-backed
+        // pools can fan out across requests and the prune task.
+        let pool = SqlitePoolOptions::new()
+            .max_connections(if is_memory { 1 } else { 5 })
+            .connect_with(options)
+            .await
+            .context("open sqlite")?;
+
+        sqlx::migrate!()
+            .run(&pool)
+            .await
+            .context("run migrations")?;
+
+        Ok(Self { pool })
     }
 
-    pub fn insert(&self, device_id: &str, bundle: &StoredKeyPackageBundle) -> Result<()> {
+    pub async fn insert(&self, device_id: &str, bundle: &StoredKeyPackageBundle) -> Result<()> {
         let received_at = now_ms() as i64;
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO keypackages
-               (device_id, received_at, payload, signature)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![device_id, received_at, bundle.payload, bundle.signature],
-        )?;
+        sqlx::query(
+            "INSERT INTO keypackages (device_id, received_at, payload, signature)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(device_id)
+        .bind(received_at)
+        .bind(&bundle.payload)
+        .bind(&bundle.signature)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
     /// Returns the most recently received bundle for `device_id`. Scope A: the
     /// chat layer consumes one bundle per device. When multi-keypackage fanout
     /// lands, switch this to return a `Vec<StoredKeyPackageBundle>`.
-    pub fn latest(&self, device_id: &str) -> Result<Option<StoredKeyPackageBundle>> {
-        let conn = self.conn.lock().unwrap();
-        let row = conn
-            .query_row(
-                "SELECT payload, signature FROM keypackages
-                 WHERE device_id = ?1
-                 ORDER BY received_at DESC
-                 LIMIT 1",
-                params![device_id],
-                |r| {
-                    Ok(StoredKeyPackageBundle {
-                        payload: r.get::<_, Vec<u8>>(0)?,
-                        signature: r.get::<_, Vec<u8>>(1)?,
-                    })
-                },
-            )
-            .optional()?;
+    pub async fn latest(&self, device_id: &str) -> Result<Option<StoredKeyPackageBundle>> {
+        let row = sqlx::query_as::<_, StoredKeyPackageBundle>(
+            "SELECT payload, signature FROM keypackages
+             WHERE device_id = ?
+             ORDER BY received_at DESC
+             LIMIT 1",
+        )
+        .bind(device_id)
+        .fetch_optional(&self.pool)
+        .await?;
         Ok(row)
     }
 
@@ -115,84 +118,85 @@ impl Store {
     /// update so a replay can't keep a stale bundle alive past retention.
     ///
     /// Returns `true` when the bundle was stored, `false` when it was rejected as
-    /// stale. The compare-and-swap runs under the connection lock so concurrent
-    /// publishes can't interleave a read with a write. The `updated_at` field of
+    /// stale. The compare-and-swap runs inside a transaction so a concurrent
+    /// publish can't interleave the read with the write. The `updated_at` field of
     /// `bundle` is ignored; the store stamps the row with the current time.
-    pub fn upsert_account(
+    pub async fn upsert_account(
         &self,
         account_id: &str,
         lamport: u64,
         bundle: &StoredAccountBundle,
     ) -> Result<bool> {
         let updated_at = now_ms() as i64;
-        let conn = self.conn.lock().unwrap();
-        let existing_lamport = conn
-            .query_row(
-                "SELECT payload FROM account_bundles WHERE account_id = ?1",
-                params![account_id],
-                |r| r.get::<_, Vec<u8>>(0),
-            )
-            .optional()?
-            .and_then(|payload| payload_lamport(&payload));
+
+        let mut tx = self.pool.begin().await?;
+        let existing_lamport = sqlx::query_scalar::<_, Vec<u8>>(
+            "SELECT payload FROM account_bundles WHERE account_id = ?",
+        )
+        .bind(account_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .and_then(|payload| payload_lamport(&payload));
         if let Some(stored) = existing_lamport
             && lamport <= stored
         {
+            // Dropping `tx` rolls the (read-only) transaction back.
             return Ok(false);
         }
-        conn.execute(
+        sqlx::query(
             "INSERT INTO account_bundles (account_id, updated_at, payload, signature)
-             VALUES (?1, ?2, ?3, ?4)
+             VALUES (?, ?, ?, ?)
              ON CONFLICT(account_id) DO UPDATE SET
                updated_at = excluded.updated_at,
                payload    = excluded.payload,
                signature  = excluded.signature",
-            params![account_id, updated_at, bundle.payload, bundle.signature],
-        )?;
+        )
+        .bind(account_id)
+        .bind(updated_at)
+        .bind(&bundle.payload)
+        .bind(&bundle.signature)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
         Ok(true)
     }
 
     /// Returns the stored bundle for `account_id`, or `None` if unknown.
-    pub fn get_account(&self, account_id: &str) -> Result<Option<StoredAccountBundle>> {
-        let conn = self.conn.lock().unwrap();
-        let row = conn
-            .query_row(
-                "SELECT payload, signature, updated_at FROM account_bundles
-                 WHERE account_id = ?1",
-                params![account_id],
-                |r| {
-                    Ok(StoredAccountBundle {
-                        payload: r.get::<_, Vec<u8>>(0)?,
-                        signature: r.get::<_, Vec<u8>>(1)?,
-                        updated_at: r.get::<_, i64>(2)?,
-                    })
-                },
-            )
-            .optional()?;
+    pub async fn get_account(&self, account_id: &str) -> Result<Option<StoredAccountBundle>> {
+        let row = sqlx::query_as::<_, StoredAccountBundle>(
+            "SELECT payload, signature, updated_at FROM account_bundles
+             WHERE account_id = ?",
+        )
+        .bind(account_id)
+        .fetch_optional(&self.pool)
+        .await?;
         Ok(row)
     }
 
     /// Drops account bundles that have not been refreshed within `retention`.
-    pub fn prune_accounts(&self, retention: Duration) -> Result<()> {
+    pub async fn prune_accounts(&self, retention: Duration) -> Result<()> {
         let cutoff_ms = now_ms().saturating_sub(retention.as_millis() as u64) as i64;
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "DELETE FROM account_bundles WHERE updated_at < ?1",
-            params![cutoff_ms],
-        )?;
+        sqlx::query("DELETE FROM account_bundles WHERE updated_at < ?")
+            .bind(cutoff_ms)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
     /// Drops bundles older than `retention` and keeps at most
     /// `max_per_identity` per `device_id` — each device's history is bounded
     /// independently.
-    pub fn prune_key_packages(&self, max_per_identity: usize, retention: Duration) -> Result<()> {
+    pub async fn prune_key_packages(
+        &self,
+        max_per_identity: usize,
+        retention: Duration,
+    ) -> Result<()> {
         let cutoff_ms = now_ms().saturating_sub(retention.as_millis() as u64) as i64;
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "DELETE FROM keypackages WHERE received_at < ?1",
-            params![cutoff_ms],
-        )?;
-        conn.execute(
+        sqlx::query("DELETE FROM keypackages WHERE received_at < ?")
+            .bind(cutoff_ms)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query(
             "DELETE FROM keypackages
              WHERE rowid IN (
                SELECT rowid FROM (
@@ -203,10 +207,12 @@ impl Store {
                         ) AS rn
                  FROM keypackages
                )
-               WHERE rn > ?1
+               WHERE rn > ?
              )",
-            params![max_per_identity as i64],
-        )?;
+        )
+        .bind(max_per_identity as i64)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 }
@@ -259,40 +265,41 @@ mod tests {
         }
     }
 
-    fn upsert(store: &Store, account: &str, lamport: u64) -> bool {
+    async fn upsert(store: &Store, account: &str, lamport: u64) -> bool {
         store
             .upsert_account(account, lamport, &bundle(lamport))
+            .await
             .unwrap()
     }
 
-    #[test]
-    fn rejects_replayed_or_stale_lamport() {
-        let store = Store::open(Path::new(":memory:")).unwrap();
+    #[tokio::test]
+    async fn rejects_replayed_or_stale_lamport() {
+        let store = Store::open(Path::new(":memory:")).await.unwrap();
 
         // First publish is always accepted.
-        assert!(upsert(&store, "acct", 5));
+        assert!(upsert(&store, "acct", 5).await);
         // A strictly higher lamport replaces it.
-        assert!(upsert(&store, "acct", 6));
+        assert!(upsert(&store, "acct", 6).await);
         // Re-publishing the same lamport (a replay) is rejected.
-        assert!(!upsert(&store, "acct", 6));
+        assert!(!upsert(&store, "acct", 6).await);
         // An older lamport (a downgrade) is rejected.
-        assert!(!upsert(&store, "acct", 4));
+        assert!(!upsert(&store, "acct", 4).await);
 
         // The stored bundle is still the newest one accepted.
-        let stored = store.get_account("acct").unwrap().unwrap();
+        let stored = store.get_account("acct").await.unwrap().unwrap();
         assert_eq!(payload_lamport(&stored.payload), Some(6));
     }
 
-    #[test]
-    fn stale_publish_does_not_refresh_retention_clock() {
-        let store = Store::open(Path::new(":memory:")).unwrap();
-        assert!(upsert(&store, "acct", 9));
-        let after_first = store.get_account("acct").unwrap().unwrap().updated_at;
+    #[tokio::test]
+    async fn stale_publish_does_not_refresh_retention_clock() {
+        let store = Store::open(Path::new(":memory:")).await.unwrap();
+        assert!(upsert(&store, "acct", 9).await);
+        let after_first = store.get_account("acct").await.unwrap().unwrap().updated_at;
 
         // A rejected (stale) publish must not bump updated_at, so a replay can't
         // keep a stale bundle alive past the retention window.
-        assert!(!upsert(&store, "acct", 9));
-        let after_replay = store.get_account("acct").unwrap().unwrap().updated_at;
+        assert!(!upsert(&store, "acct", 9).await);
+        let after_replay = store.get_account("acct").await.unwrap().unwrap().updated_at;
         assert_eq!(after_first, after_replay);
     }
 
