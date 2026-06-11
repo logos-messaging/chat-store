@@ -167,7 +167,31 @@ within `--retention-days`. The schema is an internal detail and may change.
 
 ## Smoke test
 
-End-to-end check with the real `chat-cli` (which lives in the
+The quickest end-to-end check is the bundled [`smoke_test`](examples/smoke_test.rs)
+example. It generates throwaway Ed25519 keys, signs and publishes a keypackage and
+an account bundle, fetches both back, and confirms the replay guard:
+
+```bash
+# Terminal 1 — start a server with a fresh db
+cargo run -- --bind 127.0.0.1:8080 --db tmp/chat-store.db
+
+# Terminal 2 — run the example against it (defaults to http://127.0.0.1:8080)
+cargo run --example smoke_test
+# or point it elsewhere:
+cargo run --example smoke_test -- http://127.0.0.1:8080
+```
+
+Expected output:
+
+```text
+POST /v0/keypackage        -> 204 No Content (expect 204)
+GET  /v0/keypackage/<id>   -> 200 OK (expect 200) {"payload":...,"signature":...}
+POST /v0/account           -> 204 No Content (expect 204)
+GET  /v0/account/<id>      -> 200 OK (expect 200) {"payload":...,"signature":...,"updated_at":...}
+POST /v0/account (replay)  -> 409 Conflict (expect 409)
+```
+
+You can also exercise it with the real `chat-cli` (which lives in the
 [libchat](https://github.com/logos-messaging/libchat) repo) against a running
 server:
 

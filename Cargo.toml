@@ -30,3 +30,8 @@ sqlx = { version = "0.8", default-features = false, features = [
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+# `smoke_test` example only talks to a localhost HTTP server, so no TLS backend
+# (and no OpenSSL) is pulled in.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
