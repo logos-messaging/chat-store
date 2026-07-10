@@ -214,6 +214,37 @@ A non-zero exit from `chat-cli` means the server rejected the submission — e.g
 the signature failed verification. `GET /v0/keypackage/{device_id}` returns `200`
 for a registered device and `404` otherwise.
 
+## Benchmark
+
+The bundled [`benchmark`](examples/benchmark.rs) performs an end-to-end load
+test without touching a deployed server. It starts its own `chat-store` binary
+on a loopback-only random port with a uniquely named temporary SQLite database,
+then deletes the database afterward. It has no remote URL option.
+
+Each business-flow operation publishes and fetches a signature-verified
+keypackage; publishes and fetches an account bundle; confirms that a repeated
+lamport is rejected with `409`; then publishes, fetches, and verifies a newer
+account version. Before the measured flow it also checks both unknown-resource
+`404` paths and a malformed-request `400` path.
+
+```bash
+cargo build --release
+cargo run --release --example benchmark -- --operations 1000 --concurrency 16
+```
+
+Useful options:
+
+```text
+--payload-bytes <n>  Opaque bytes appended to each benchmark payload (default: 512)
+--server-bin <path>  Local binary to launch (default: target/release/chat-store)
+--keep-db            Keep the temporary SQLite database for post-run inspection
+```
+
+Do not point benchmark traffic at the production deployment. To measure a
+network deployment, provision a separate chat-store instance and database for
+benchmarking, then use a load-test runner configured only for that isolated
+environment.
+
 ## Lifecycle
 
 Exists to unblock contact-by-id flows on testnet; removed once λLEZ-based
