@@ -363,7 +363,7 @@ fn start_local_server(config: &Config) -> Result<LocalServer> {
         .args(["--bind", &address.to_string(), "--db"])
         .arg(&db_path)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::inherit())
         .spawn()
         .with_context(|| format!("start local server {}", config.server_bin.display()))?;
 

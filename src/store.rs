@@ -4,9 +4,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+use tokio::sync::Mutex;
 
 pub struct Store {
     pool: SqlitePool,
+    write_lock: Mutex<()>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -72,10 +74,14 @@ impl Store {
             .await
             .context("run migrations")?;
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            write_lock: Mutex::new(()),
+        })
     }
 
     pub async fn insert(&self, device_id: &str, bundle: &StoredKeyPackageBundle) -> Result<()> {
+        let _write_guard = self.write_lock.lock().await;
         let received_at = now_ms() as i64;
         sqlx::query(
             "INSERT INTO keypackages (device_id, received_at, payload, signature)
@@ -127,6 +133,10 @@ impl Store {
         lamport: u64,
         bundle: &StoredAccountBundle,
     ) -> Result<bool> {
+        // SQLite allows only one writer. This transaction reads first to enforce
+        // Lamport ordering, so concurrent mutations can otherwise race to
+        // upgrade their shared read locks and fail with SQLITE_BUSY.
+        let _write_guard = self.write_lock.lock().await;
         let updated_at = now_ms() as i64;
 
         let mut tx = self.pool.begin().await?;
@@ -175,6 +185,7 @@ impl Store {
 
     /// Drops account bundles that have not been refreshed within `retention`.
     pub async fn prune_accounts(&self, retention: Duration) -> Result<()> {
+        let _write_guard = self.write_lock.lock().await;
         let cutoff_ms = now_ms().saturating_sub(retention.as_millis() as u64) as i64;
         sqlx::query("DELETE FROM account_bundles WHERE updated_at < ?")
             .bind(cutoff_ms)
@@ -191,6 +202,7 @@ impl Store {
         max_per_identity: usize,
         retention: Duration,
     ) -> Result<()> {
+        let _write_guard = self.write_lock.lock().await;
         let cutoff_ms = now_ms().saturating_sub(retention.as_millis() as u64) as i64;
         sqlx::query("DELETE FROM keypackages WHERE received_at < ?")
             .bind(cutoff_ms)
@@ -301,6 +313,19 @@ mod tests {
         assert!(!upsert(&store, "acct", 9).await);
         let after_replay = store.get_account("acct").await.unwrap().unwrap().updated_at;
         assert_eq!(after_first, after_replay);
+    }
+
+    #[tokio::test]
+    async fn concurrent_account_publishes_succeed() {
+        let store = std::sync::Arc::new(Store::open(Path::new(":memory:")).await.unwrap());
+        let mut tasks = tokio::task::JoinSet::new();
+        for index in 0..16 {
+            let store = store.clone();
+            tasks.spawn(async move { upsert(&store, &format!("acct-{index}"), 1).await });
+        }
+        while let Some(result) = tasks.join_next().await {
+            assert!(result.unwrap());
+        }
     }
 
     #[test]
