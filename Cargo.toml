@@ -18,6 +18,10 @@ base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 ed25519-dalek = "2.2.0"
 hex = "0.4"
+# Embedded logos-delivery node for subscription-based ingestion. Path dep on
+# the sibling libchat checkout; links the native liblogosdelivery (enter the
+# libchat dev shell or set LOGOS_DELIVERY_LIB_DIR to build a runnable binary).
+logos-delivery = { path = "../libchat/extensions/logos-delivery-rust" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # SQLite via sqlx with a bundled libsqlite3 — no sqlcipher/OpenSSL, no system libs.
