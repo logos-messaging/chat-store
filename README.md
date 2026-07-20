@@ -5,10 +5,21 @@ Persistence for group-chat users' key packages — the **chat-store** HTTP servi
 [libchat](https://github.com/logos-messaging/libchat) so it can be deployed on
 its own.
 
-Standalone HTTP service that caches MLS KeyPackages keyed by **`device_id`**, so a
+Standalone service that caches MLS KeyPackages keyed by **`device_id`**, so a
 client can fetch a contact's keypackage without an out-of-band exchange.
-Throwaway by design: scheduled to be replaced by a λLEZ-based service in v0.3, so
-it intentionally has no overlap with the rest of libchat (axum + rusqlite only).
+Throwaway by design: scheduled to be replaced by a λLEZ-based service in v0.3,
+with no libchat-core dependency (the embedded logos-delivery node comes from the
+sibling libchat checkout's transport crate).
+
+Submissions arrive on either of two write paths feeding the same verification +
+storage pipeline:
+
+- **HTTP POST** (`/v0/keypackage`, `/v0/account`) — synchronous and acknowledged;
+- **logos-delivery subscription** — clients publish the same JSON bodies on the
+  store's content topics and the server picks them up from the network (see
+  [Delivery ingestion](#delivery-ingestion)).
+
+The query API is HTTP only.
 
 `device_id` is the hex-encoded 32-byte Ed25519 verifying key of a device.
 
@@ -57,8 +68,32 @@ cargo build --release
 | `--max-per-identity <n>` | `100` | Bundles retained per `device_id` |
 | `--retention-days <n>` | `30` | Drop bundles older than this |
 | `--prune-interval-secs <n>` | `3600` | How often the prune task runs |
+| `--no-delivery` | off | Disable the logos-delivery subscriber (HTTP POST ingestion only) |
+| `--preset <name>` | `logos.dev` | logos-delivery network preset the subscriber joins |
+| `--p2p-port <port>` | `0` | TCP + discv5 UDP port for the embedded node (0 = OS-assigned) |
 
 Logs via `RUST_LOG` (default `info`).
+
+Building a runnable binary links the native `liblogosdelivery`; enter the
+libchat dev shell (`nix develop` in the sibling checkout) or set
+`LOGOS_DELIVERY_LIB_DIR` to the directory containing the library.
+
+## Delivery ingestion
+
+Unless `--no-delivery` is given, the server runs an embedded logos-delivery
+node and subscribes to two content topics:
+
+```text
+/logos-chat/1/store-keypackage-v0/proto   keypackage submissions
+/logos-chat/1/store-account-v0/proto      account device-list submissions
+```
+
+Each received message is the same JSON body as the corresponding POST endpoint
+(below) and goes through identical signature verification and storage rules.
+Publishing is fire-and-forget on the client side: rejected submissions are only
+logged by the server, which the trust model can afford because consumers verify
+every bundle on retrieval anyway. libchat's `DeliveryRegistry` publishes on
+these topics when its publish mode is set to delivery.
 
 ## Docker
 
@@ -189,6 +224,19 @@ GET  /v0/keypackage/<id>   -> 200 OK (expect 200) {"payload":...,"signature":...
 POST /v0/account           -> 204 No Content (expect 204)
 GET  /v0/account/<id>      -> 200 OK (expect 200) {"payload":...,"signature":...,"updated_at":...}
 POST /v0/account (replay)  -> 409 Conflict (expect 409)
+```
+
+The delivery write path has its own smoke test,
+[`delivery_smoke_test`](examples/delivery_smoke_test.rs): it starts a publisher
+node, publishes a signed keypackage and account bundle on the store's content
+topics, and polls the query API until both appear:
+
+```bash
+# Terminal 1 — start a server (delivery ingestion is on by default)
+cargo run -- --bind 127.0.0.1:8080 --db tmp/chat-store.db
+
+# Terminal 2 — publish over the network and poll the query API
+cargo run --example delivery_smoke_test
 ```
 
 You can also exercise it with the real `chat-cli` (which lives in the
