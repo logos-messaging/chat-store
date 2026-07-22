@@ -33,13 +33,14 @@ pub fn router(store: Arc<Store>) -> Router {
         .with_state(store)
 }
 
-/// `POST /v0/keypackage` — same submission the logos-delivery subscriber
-/// accepts; verification and storage live in [`submit::apply_keypackage`].
+/// `POST /v0/keypackage` — the same submission the logos-delivery subscriber
+/// accepts, in JSON rather than protobuf; verification and storage live in
+/// [`submit::apply_keypackage`].
 async fn submit(
     State(store): State<Arc<Store>>,
     Json(req): Json<SubmitRequest>,
 ) -> Result<StatusCode, ApiError> {
-    submit::apply_keypackage(&store, &req).await?;
+    submit::apply_keypackage(&store, &req.decode()?).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -74,14 +75,14 @@ pub struct FetchAccountResponse {
 ///
 /// The server verifies the Ed25519 signature and then stores exactly one blob
 /// per `account_pub`, replacing any previous value. Clients should re-publish
-/// whenever they add or rotate LocalIdentities. Same submission the
-/// logos-delivery subscriber accepts; the shared rules live in
-/// [`submit::apply_account`].
+/// whenever they add or rotate LocalIdentities. The same submission the
+/// logos-delivery subscriber accepts, in JSON rather than protobuf; the shared
+/// rules live in [`submit::apply_account`].
 async fn submit_account(
     State(store): State<Arc<Store>>,
     Json(req): Json<SubmitAccountRequest>,
 ) -> Result<StatusCode, ApiError> {
-    submit::apply_account(&store, &req).await?;
+    submit::apply_account(&store, &req.decode()?).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

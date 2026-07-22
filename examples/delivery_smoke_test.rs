@@ -1,10 +1,10 @@
 //! End-to-end smoke test for the logos-delivery write path.
 //!
 //! Publishes a signed keypackage bundle and an account device-list bundle over
-//! the delivery network — the same JSON submissions the HTTP POST endpoints
-//! take, on the store's subscription topics — then polls the HTTP query API
-//! until both appear. Requires a chat-store running with delivery ingestion
-//! enabled (the default) on the same network preset.
+//! the delivery network — the protobuf submissions the store subscribes for,
+//! carrying the same fields the HTTP POST endpoints take as JSON — then polls
+//! the HTTP query API until both appear. Requires a chat-store running with
+//! delivery ingestion enabled (the default) on the same network preset.
 //!
 //! ```text
 //! cargo run -- --bind 127.0.0.1:8080 --db tmp/chat-store.db   # terminal 1
@@ -15,12 +15,12 @@
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64;
+use chat_proto::logoschat::store::{AccountSubmissionV1, KeyPackageSubmissionV1};
 use ed25519_dalek::{Signer, SigningKey};
 use logos_delivery::{P2pConfig, ThreadedDeliveryWrapper};
+use prost::Message;
+use prost::bytes::Bytes;
 use reqwest::blocking::Client;
-use serde_json::json;
 
 /// Must match `ingest::KEYPACKAGE_SUBMIT_TOPIC` / `ingest::ACCOUNT_SUBMIT_TOPIC`
 /// (examples cannot import from the binary crate).
@@ -59,14 +59,14 @@ fn main() -> Result<()> {
     // `timestamp_ms_le[8] || key_package`.
     let mut kp_payload = seed_ms.to_le_bytes().to_vec();
     kp_payload.extend_from_slice(b"delivery-smoke-keypackage");
-    publish_json(
+    publish(
         &node,
         KEYPACKAGE_SUBMIT_TOPIC,
-        &json!({
-            "device_id": device_id,
-            "payload": BASE64.encode(&kp_payload),
-            "signature": BASE64.encode(device_key.sign(&kp_payload).to_bytes()),
-        }),
+        &KeyPackageSubmissionV1 {
+            device_id: Bytes::copy_from_slice(device_key.verifying_key().as_bytes()),
+            payload: Bytes::copy_from_slice(&kp_payload),
+            signature: Bytes::copy_from_slice(&device_key.sign(&kp_payload).to_bytes()),
+        },
     )?;
     println!("published keypackage submission on {KEYPACKAGE_SUBMIT_TOPIC}");
 
@@ -75,14 +75,14 @@ fn main() -> Result<()> {
     acct_payload.push(1u8);
     acct_payload.extend_from_slice(&1u64.to_le_bytes());
     acct_payload.extend_from_slice(b"delivery-smoke-devices");
-    publish_json(
+    publish(
         &node,
         ACCOUNT_SUBMIT_TOPIC,
-        &json!({
-            "account_pub": account_pub,
-            "payload": BASE64.encode(&acct_payload),
-            "signature": BASE64.encode(account_key.sign(&acct_payload).to_bytes()),
-        }),
+        &AccountSubmissionV1 {
+            account_pub: Bytes::copy_from_slice(account_key.verifying_key().as_bytes()),
+            payload: Bytes::copy_from_slice(&acct_payload),
+            signature: Bytes::copy_from_slice(&account_key.sign(&acct_payload).to_bytes()),
+        },
     )?;
     println!("published account submission on {ACCOUNT_SUBMIT_TOPIC}");
 
@@ -103,12 +103,12 @@ fn derived_key(seed_ms: u64, salt: u8) -> SigningKey {
     SigningKey::from_bytes(&bytes)
 }
 
-fn publish_json(
+fn publish<M: Message>(
     node: &ThreadedDeliveryWrapper<Vec<u8>>,
     topic: &str,
-    body: &serde_json::Value,
+    submission: &M,
 ) -> Result<()> {
-    node.publish(topic, body.to_string().as_bytes())
+    node.publish(topic, &submission.encode_to_vec())
         .map_err(|e| anyhow::anyhow!("publish on {topic}: {e}"))
 }
 

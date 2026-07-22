@@ -15,6 +15,11 @@ path = "src/main.rs"
 anyhow = "1.0"
 axum = "0.7"
 base64 = "0.22"
+# Wire schema for the delivery submissions, shared with libchat.
+# TODO: switch to `{ git = "https://github.com/logos-messaging/chat_proto", rev = "..." }`
+# once the store submission schemas land on chat_proto's main. Path dep only so
+# this builds ahead of that merge.
+chat-proto = { path = "../chat_proto/gen/rust" }
 clap = { version = "4", features = ["derive"] }
 ed25519-dalek = "2.2.0"
 hex = "0.4"
@@ -22,6 +27,7 @@ hex = "0.4"
 # the sibling libchat checkout; links the native liblogosdelivery (enter the
 # libchat dev shell or set LOGOS_DELIVERY_LIB_DIR to build a runnable binary).
 logos-delivery = { path = "../libchat/extensions/logos-delivery-rust" }
+prost = "0.14"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # SQLite via sqlx with a bundled libsqlite3 — no sqlcipher/OpenSSL, no system libs.
