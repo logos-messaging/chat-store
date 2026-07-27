@@ -56,7 +56,10 @@ fn test_keypackage(client: &Client, base: &str) -> Result<()> {
             "signature": BASE64.encode(key.sign(&payload).to_bytes()),
         }))
         .send()?;
-    println!("POST /v0/keypackage        -> {} (expect 204)", resp.status());
+    println!(
+        "POST /v0/keypackage        -> {} (expect 204)",
+        resp.status()
+    );
 
     let resp = client
         .get(format!("{base}/v0/keypackage/{device_id}"))
@@ -91,9 +94,14 @@ fn test_account(client: &Client, base: &str) -> Result<()> {
         .post(format!("{base}/v0/account"))
         .json(&body)
         .send()?;
-    println!("POST /v0/account           -> {} (expect 204)", resp.status());
+    println!(
+        "POST /v0/account           -> {} (expect 204)",
+        resp.status()
+    );
 
-    let resp = client.get(format!("{base}/v0/account/{account_pub}")).send()?;
+    let resp = client
+        .get(format!("{base}/v0/account/{account_pub}"))
+        .send()?;
     println!(
         "GET  /v0/account/<id>      -> {} (expect 200) {}",
         resp.status(),
@@ -105,7 +113,10 @@ fn test_account(client: &Client, base: &str) -> Result<()> {
         .post(format!("{base}/v0/account"))
         .json(&body)
         .send()?;
-    println!("POST /v0/account (replay)  -> {} (expect 409)", resp.status());
+    println!(
+        "POST /v0/account (replay)  -> {} (expect 409)",
+        resp.status()
+    );
     Ok(())
 }
 

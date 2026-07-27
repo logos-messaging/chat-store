@@ -22,7 +22,7 @@ use prost::Message;
 use prost::bytes::Bytes;
 use reqwest::blocking::Client;
 
-/// Must match `ingest::KEYPACKAGE_SUBMIT_TOPIC` / `ingest::ACCOUNT_SUBMIT_TOPIC`
+/// Must match `delivery::KEYPACKAGE_SUBMIT_TOPIC` / `delivery::ACCOUNT_SUBMIT_TOPIC`
 /// (examples cannot import from the binary crate).
 const KEYPACKAGE_SUBMIT_TOPIC: &str = "/logos-chat/1/store-keypackage-v0/proto";
 const ACCOUNT_SUBMIT_TOPIC: &str = "/logos-chat/1/store-account-v0/proto";
@@ -91,7 +91,11 @@ fn main() -> Result<()> {
         &format!("{base}/v0/keypackage/{device_id}"),
         "keypackage",
     )?;
-    poll_until_stored(&client, &format!("{base}/v0/account/{account_pub}"), "account")?;
+    poll_until_stored(
+        &client,
+        &format!("{base}/v0/account/{account_pub}"),
+        "account",
+    )?;
 
     println!("delivery smoke test passed");
     Ok(())
@@ -123,7 +127,10 @@ fn poll_until_stored(client: &Client, url: &str, what: &str) -> Result<()> {
             .with_context(|| format!("GET {url}"))?
             .status();
         if status.is_success() {
-            println!("GET {url} -> {status} ({what} stored, {:?})", started.elapsed());
+            println!(
+                "GET {url} -> {status} ({what} stored, {:?})",
+                started.elapsed()
+            );
             return Ok(());
         }
         if started.elapsed() > POLL_BUDGET {

@@ -1,13 +1,13 @@
-//! logos-delivery ingestion.
+//! The logos-delivery write path.
 //!
-//! Runs an embedded logos-delivery node, subscribes to the store submission
-//! content topics, and feeds every received submission through the same
-//! verification + storage pipeline as the HTTP POST endpoints (`submit`).
-//! Submissions arrive as protobuf on this wire — matching the `/proto` content
-//! topics they are published on — and carry the same fields the JSON POST
-//! bodies do. Publishing is fire-and-forget on the client side, so rejected
-//! submissions are only logged here; consumers verify every bundle on
-//! retrieval anyway.
+//! Runs an embedded logos-delivery node, subscribes to the store's content
+//! topics, and feeds every bundle it receives through the same verification +
+//! storage pipeline as the HTTP POST endpoints (`bundle`). Bundles arrive as
+//! protobuf on this wire — matching the `/proto` content topics they are
+//! published on — carrying the same fields the JSON POST bodies do.
+//!
+//! Publishing is fire-and-forget on the client side, so rejected bundles are
+//! only logged here; consumers verify every bundle on retrieval anyway.
 
 use std::sync::Arc;
 
@@ -18,18 +18,18 @@ use logos_delivery::ThreadedDeliveryWrapper;
 use prost::Message;
 use tracing::{debug, warn};
 
+use crate::bundle::{Bundle, apply_account, apply_keypackage};
 use crate::store::Store;
-use crate::submit::{self, Submission};
 
-/// Content topic carrying keypackage submissions. Must match what libchat's
-/// `DeliveryRegistry` publishes: delivery address `store-keypackage-v0` mapped
+/// Content topic carrying keypackage bundles. Must match what libchat's
+/// `ContactRegistry` publishes: delivery address `store-keypackage-v0` mapped
 /// through the `/logos-chat/1/{address}/proto` content-topic scheme.
 pub const KEYPACKAGE_SUBMIT_TOPIC: &str = "/logos-chat/1/store-keypackage-v0/proto";
 
-/// Content topic carrying account device-list bundle submissions.
+/// Content topic carrying account device-list bundles.
 pub const ACCOUNT_SUBMIT_TOPIC: &str = "/logos-chat/1/store-account-v0/proto";
 
-/// A raw submission taken off the wire; the protobuf body is decoded (and its
+/// A raw bundle taken off the wire; the protobuf body is decoded (and its
 /// signature verified) on the ingest thread, not the node callback.
 #[derive(Clone)]
 enum Received {
@@ -37,12 +37,12 @@ enum Received {
     Account(Vec<u8>),
 }
 
-/// Start the embedded node, subscribe to the submission topics, and spawn the
+/// Start the embedded node, subscribe to the bundle topics, and spawn the
 /// ingest thread. The node lives as long as the returned thread does — i.e.
 /// the whole process; there is no shutdown handshake for this testnet service.
 ///
 /// `runtime` is the server's tokio handle: the store is async, but the
-/// delivery wrapper hands messages to a plain thread, so each submission is
+/// delivery wrapper hands messages to a plain thread, so each bundle is
 /// bridged back with `block_on`.
 pub fn start(store: Arc<Store>, cfg: P2pConfig, runtime: tokio::runtime::Handle) -> Result<()> {
     let mut node = ThreadedDeliveryWrapper::start(cfg, |event| {
@@ -57,9 +57,9 @@ pub fn start(store: Arc<Store>, cfg: P2pConfig, runtime: tokio::runtime::Handle)
     .context("start embedded logos-delivery node")?;
 
     node.subscribe(KEYPACKAGE_SUBMIT_TOPIC)
-        .context("subscribe keypackage submissions")?;
+        .context("subscribe keypackage bundles")?;
     node.subscribe(ACCOUNT_SUBMIT_TOPIC)
-        .context("subscribe account submissions")?;
+        .context("subscribe account bundles")?;
 
     let inbound = node.inbound_queue();
     std::thread::Builder::new()
@@ -82,21 +82,21 @@ fn ingest_keypackage(store: &Store, runtime: &tokio::runtime::Handle, bytes: &[u
     let wire = match KeyPackageSubmissionV1::decode(bytes) {
         Ok(wire) => wire,
         Err(e) => {
-            warn!("keypackage submission: invalid protobuf: {e}");
+            warn!("keypackage bundle: invalid protobuf: {e}");
             return;
         }
     };
-    let submission = match Submission::keypackage(&wire.device_id, &wire.payload, &wire.signature) {
-        Ok(submission) => submission,
+    let bundle = match Bundle::from_bytes(&wire.device_id, &wire.payload, &wire.signature) {
+        Ok(bundle) => bundle,
         Err(e) => {
-            warn!("keypackage submission rejected: {e}");
+            warn!("keypackage bundle rejected: {e}");
             return;
         }
     };
-    let device_id = submission.key_hex();
-    match runtime.block_on(submit::apply_keypackage(store, &submission)) {
+    let device_id = bundle.key_hex();
+    match runtime.block_on(apply_keypackage(store, &bundle)) {
         Ok(()) => debug!(%device_id, "stored keypackage from delivery"),
-        Err(e) => warn!(%device_id, "keypackage submission rejected: {e}"),
+        Err(e) => warn!(%device_id, "keypackage bundle rejected: {e}"),
     }
 }
 
@@ -104,20 +104,20 @@ fn ingest_account(store: &Store, runtime: &tokio::runtime::Handle, bytes: &[u8])
     let wire = match AccountSubmissionV1::decode(bytes) {
         Ok(wire) => wire,
         Err(e) => {
-            warn!("account submission: invalid protobuf: {e}");
+            warn!("account bundle: invalid protobuf: {e}");
             return;
         }
     };
-    let submission = match Submission::account(&wire.account_pub, &wire.payload, &wire.signature) {
-        Ok(submission) => submission,
+    let bundle = match Bundle::from_bytes(&wire.account_pub, &wire.payload, &wire.signature) {
+        Ok(bundle) => bundle,
         Err(e) => {
-            warn!("account submission rejected: {e}");
+            warn!("account bundle rejected: {e}");
             return;
         }
     };
-    let account_pub = submission.key_hex();
-    match runtime.block_on(submit::apply_account(store, &submission)) {
+    let account_pub = bundle.key_hex();
+    match runtime.block_on(apply_account(store, &bundle)) {
         Ok(()) => debug!(%account_pub, "stored account bundle from delivery"),
-        Err(e) => warn!(%account_pub, "account submission rejected: {e}"),
+        Err(e) => warn!(%account_pub, "account bundle rejected: {e}"),
     }
 }

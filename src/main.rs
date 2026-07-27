@@ -1,14 +1,14 @@
 //! Testnet KeyPackage Registry service.
 //!
 //! Throwaway service for issue #110 — replaced by λLEZ in v0.3. No libchat-core
-//! dependency; the embedded logos-delivery node comes from the sibling libchat
-//! checkout's transport crate.
+//! dependency; the embedded logos-delivery node comes from libchat's transport
+//! crate, pulled in as a pinned git dependency.
 //!
 //! Submissions arrive on either write path — both feed the same verification +
-//! storage pipeline (`submit`):
+//! storage pipeline (`bundle`):
 //!   - HTTP POST (below), synchronous and acknowledged;
-//!   - logos-delivery subscription (`ingest`, disable with `--no-delivery`):
-//!     clients publish the same JSON on the store content topics.
+//!   - logos-delivery subscription (`delivery`, disable with `--no-delivery`):
+//!     clients publish protobuf submissions on the store content topics.
 //!
 //! HTTP wire:
 //!   POST /v0/keypackage             — submit a signed keypackage bundle
@@ -16,10 +16,10 @@
 //!   POST /v0/account                — upsert a signed account device-list bundle
 //!   GET  /v0/account/{account_pub}  — fetch the account device-list bundle
 
+mod bundle;
+mod delivery;
 mod handlers;
-mod ingest;
 mod store;
-mod submit;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -33,7 +33,10 @@ use tracing_subscriber::EnvFilter;
 use store::Store;
 
 #[derive(Parser, Debug)]
-#[command(name = "chat-store", about = "Testnet Chat Store (KeyPackage + account directory)")]
+#[command(
+    name = "chat-store",
+    about = "Testnet Chat Store (KeyPackage + account directory)"
+)]
 struct Cli {
     /// Address to bind the HTTP server.
     #[arg(long, default_value = "0.0.0.0:8080")]
@@ -80,11 +83,7 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    let store = Arc::new(
-        Store::open(&cli.db)
-            .await
-            .context("failed to open store")?,
-    );
+    let store = Arc::new(Store::open(&cli.db).await.context("failed to open store")?);
 
     let prune_store = store.clone();
     let max_per_id = cli.max_per_identity;
@@ -107,9 +106,9 @@ async fn main() -> Result<()> {
         // Blocks for a few seconds while the node starts and finds peers;
         // deliberately before serving HTTP so a subscriber failure is a
         // startup error, not a silent half-running store.
-        ingest::start(
+        delivery::start(
             store.clone(),
-            ingest::P2pConfig {
+            delivery::P2pConfig {
                 preset: cli.preset.clone(),
                 port: cli.p2p_port,
                 log_level: "ERROR".into(),
