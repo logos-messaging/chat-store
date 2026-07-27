@@ -227,6 +227,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 [[package]]
 name = "chat-proto"
 version = "0.1.0"
+source = "git+https://github.com/logos-messaging/chat_proto?rev=e05c21229a18bab655c9aec06409189447d24a6b#e05c21229a18bab655c9aec06409189447d24a6b"
 dependencies = [
  "prost",
 ]
@@ -1013,6 +1014,7 @@ checksum = "953f07c43838f8e6f9758cab68bf5bed85465e7587ebe0b823f1bcd81978ad3a"
 [[package]]
 name = "logos-delivery"
 version = "0.1.0"
+source = "git+https://github.com/logos-messaging/libchat?rev=5c55c2ee76bebd1dbd5eb4bfa95d9e71acd0fa14#5c55c2ee76bebd1dbd5eb4bfa95d9e71acd0fa14"
 dependencies = [
  "base64",
  "crossbeam-channel",

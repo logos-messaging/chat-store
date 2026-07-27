@@ -8,14 +8,14 @@ its own.
 Standalone service that caches MLS KeyPackages keyed by **`device_id`**, so a
 client can fetch a contact's keypackage without an out-of-band exchange.
 Throwaway by design: scheduled to be replaced by a λLEZ-based service in v0.3,
-with no libchat-core dependency (the embedded logos-delivery node comes from the
-sibling libchat checkout's transport crate).
+with no libchat-core dependency (the embedded logos-delivery node comes from
+libchat's transport crate, pulled in as a pinned git dependency).
 
 Submissions arrive on either of two write paths feeding the same verification +
 storage pipeline:
 
 - **HTTP POST** (`/v0/keypackage`, `/v0/account`) — synchronous and acknowledged;
-- **logos-delivery subscription** — clients publish the same JSON bodies on the
+- **logos-delivery subscription** — clients publish protobuf submissions on the
   store's content topics and the server picks them up from the network (see
   [Delivery ingestion](#delivery-ingestion)).
 
@@ -56,10 +56,16 @@ exactly one way — no delimiter, even though `key_package` is arbitrary bytes.
 
 ## Building & running
 
+Building a runnable binary links the native `liblogosdelivery`, which this
+repo's flake builds. The dev shell exports `LOGOS_DELIVERY_LIB_DIR` for you:
+
 ```bash
+nix develop                   # or set LOGOS_DELIVERY_LIB_DIR yourself
 cargo build --release
 ./target/release/chat-store   # binds 0.0.0.0:8080, db ./chat-store.db
 ```
+
+Without the library, `cargo check` and `clippy` still pass — only linking fails.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -74,10 +80,6 @@ cargo build --release
 
 Logs via `RUST_LOG` (default `info`).
 
-Building a runnable binary links the native `liblogosdelivery`; enter the
-libchat dev shell (`nix develop` in the sibling checkout) or set
-`LOGOS_DELIVERY_LIB_DIR` to the directory containing the library.
-
 ## Delivery ingestion
 
 Unless `--no-delivery` is given, the server runs an embedded logos-delivery
@@ -88,12 +90,17 @@ node and subscribes to two content topics:
 /logos-chat/1/store-account-v0/proto      account device-list submissions
 ```
 
-Each received message is the same JSON body as the corresponding POST endpoint
-(below) and goes through identical signature verification and storage rules.
+Each received message is a protobuf `KeyPackageSubmissionV1` or
+`AccountSubmissionV1` — matching the `/proto` topic suffix — carrying the same
+fields as the corresponding POST body and going through identical signature
+verification and storage rules. The schemas live in
+[chat_proto](https://github.com/logos-messaging/chat_proto) (`protos/store.proto`),
+pinned by rev in `Cargo.toml` so the wire format only changes deliberately.
+
 Publishing is fire-and-forget on the client side: rejected submissions are only
 logged by the server, which the trust model can afford because consumers verify
-every bundle on retrieval anyway. libchat's `DeliveryRegistry` publishes on
-these topics when its publish mode is set to delivery.
+every bundle on retrieval anyway. libchat's `ContactRegistry` publishes on these
+topics when constructed with `RegistryPublishMode::Delivery`.
 
 ## Docker
 
@@ -104,6 +111,13 @@ docker build -t chat-store .
 # Run it, persisting the SQLite db on a named volume and exposing port 8080
 docker run --rm -p 8080:8080 -v chat-store-data:/data chat-store
 ```
+
+The build runs inside nix, because the binary links `liblogosdelivery` and the
+nixpkgs glibc it is built against is newer than bookworm's — so cargo has to run
+against that same nixpkgs. The runtime image is still `debian:bookworm-slim`,
+carrying only the nix store closure the binary resolves by absolute path. The
+first build compiles the native library from source and takes a long time;
+afterwards it is a cached layer that only changes with `flake.lock`.
 
 The image runs the binary with `--bind 0.0.0.0:8080 --db /data/chat-store.db`
 by default; override the `CMD` to change flags, e.g.:
@@ -261,6 +275,11 @@ sqlite3 tmp/registry.db "SELECT substr(device_id,1,12), length(payload) FROM key
 A non-zero exit from `chat-cli` means the server rejected the submission — e.g.
 the signature failed verification. `GET /v0/keypackage/{device_id}` returns `200`
 for a registered device and `404` otherwise.
+
+Add `--registry-publish delivery` to those `chat-cli` invocations to exercise
+the delivery write path instead of the HTTP POST API. Publishing is then
+fire-and-forget, so `chat-cli` exits `0` regardless and the bundles appear in
+the database only once the server has received and accepted them.
 
 ## Benchmark
 
