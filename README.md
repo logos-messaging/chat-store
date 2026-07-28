@@ -108,8 +108,10 @@ topics when constructed with `RegistryPublishMode::Delivery`.
 # Build the image
 docker build -t chat-store .
 
-# Run it, persisting the SQLite db on a named volume and exposing port 8080
-docker run --rm -p 8080:8080 -v chat-store-data:/data chat-store
+# Run it, persisting the SQLite db on a named volume. 8080 is the HTTP API;
+# 60000 is the delivery node's libp2p (TCP) and discv5 (UDP) port.
+docker run --rm -p 8080:8080 -p 60000:60000/tcp -p 60000:60000/udp \
+  -v chat-store-data:/data chat-store
 ```
 
 The build runs inside nix, because the binary links `liblogosdelivery` and the
@@ -119,13 +121,20 @@ carrying only the nix store closure the binary resolves by absolute path. The
 first build compiles the native library from source and takes a long time;
 afterwards it is a cached layer that only changes with `flake.lock`.
 
-The image runs the binary with `--bind 0.0.0.0:8080 --db /data/chat-store.db`
-by default; override the `CMD` to change flags, e.g.:
+The image runs the binary with
+`--bind 0.0.0.0:8080 --db /data/chat-store.db --p2p-port 60000` by default. The
+p2p port is pinned rather than left at its default of `0`, because an
+OS-assigned port cannot be published from a container and would leave the node
+undialable. Override the `CMD` to change flags, e.g.:
 
 ```bash
 docker run --rm -p 9000:9000 -v chat-store-data:/data chat-store \
-  --bind 0.0.0.0:9000 --db /data/registry.db --retention-days 14
+  --bind 0.0.0.0:9000 --db /data/registry.db --retention-days 14 --no-delivery
 ```
+
+Note that overriding `CMD` replaces it wholesale, so a delivery-enabled run has
+to repeat `--p2p-port`. Deployments that only serve the HTTP API can pass
+`--no-delivery` and skip publishing the p2p ports entirely.
 
 ## API
 

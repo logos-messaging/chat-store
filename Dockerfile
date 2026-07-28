@@ -68,10 +68,12 @@ COPY --from=builder /output/chat-store /usr/local/bin/chat-store
 
 # Matches the default --bind 0.0.0.0:8080.
 EXPOSE 8080
+EXPOSE 60000/tcp
+EXPOSE 60000/udp
 
 # Persist the SQLite database on a volume rather than the container layer.
 VOLUME ["/data"]
 ENV RUST_LOG=info
 
 ENTRYPOINT ["chat-store"]
-CMD ["--bind", "0.0.0.0:8080", "--db", "/data/chat-store.db"]
+CMD ["--bind", "0.0.0.0:8080", "--db", "/data/chat-store.db", "--p2p-port", "60000"]
