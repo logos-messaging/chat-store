@@ -15,9 +15,12 @@ path = "src/main.rs"
 anyhow = "1.0"
 axum = "0.7"
 base64 = "0.22"
+chat-proto = { git = "https://github.com/logos-messaging/chat_proto", rev = "e05c21229a18bab655c9aec06409189447d24a6b" }
 clap = { version = "4", features = ["derive"] }
 ed25519-dalek = "2.2.0"
 hex = "0.4"
+logos-delivery = { git = "https://github.com/logos-messaging/libchat", rev = "5c55c2ee76bebd1dbd5eb4bfa95d9e71acd0fa14" }
+prost = "0.14"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # SQLite via sqlx with a bundled libsqlite3 — no sqlcipher/OpenSSL, no system libs.

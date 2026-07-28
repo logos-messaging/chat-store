@@ -7,13 +7,14 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
-use crate::store::{Store, StoredAccountBundle, StoredKeyPackageBundle};
+use crate::bundle::{self, Bundle, BundleError};
+use crate::store::Store;
 
+/// A signed keypackage bundle.
 #[derive(Debug, Deserialize)]
-pub struct SubmitRequest {
+pub struct SubmitKeyPackageRequest {
     /// Hex of the 32-byte Ed25519 device verifying key. Used to verify the
     /// signature and as the storage/lookup key. `payload` stays opaque.
     pub device_id: String,
@@ -25,86 +26,14 @@ pub struct SubmitRequest {
     pub signature: String,
 }
 
-#[derive(Debug, Serialize)]
-pub struct FetchResponse {
-    /// base64 of the stored payload; consumers verify `signature` over it.
-    pub payload: String,
-    pub signature: String,
+impl SubmitKeyPackageRequest {
+    /// Decode the JSON body's hex + base64 fields into a [`Bundle`].
+    pub fn decode(&self) -> Result<Bundle, BundleError> {
+        decode_bundle(&self.device_id, &self.payload, &self.signature)
+    }
 }
 
-#[derive(Debug, Serialize)]
-struct ErrorBody {
-    error: String,
-}
-
-pub fn router(store: Arc<Store>) -> Router {
-    Router::new()
-        .route("/v0/keypackage", post(submit))
-        .route("/v0/keypackage/:device_id", get(fetch))
-        .route("/v0/account", post(submit_account))
-        .route("/v0/account/:account_pub", get(fetch_account))
-        .with_state(store)
-}
-
-async fn submit(
-    State(store): State<Arc<Store>>,
-    Json(req): Json<SubmitRequest>,
-) -> Result<StatusCode, ApiError> {
-    // Verify proof-of-possession before persisting. `payload` is opaque — the
-    // server only checks that `signature` over the received payload bytes is
-    // valid under `device_id`'s key. A valid signature means the submitter holds
-    // that key. This rejects junk early (DoS mitigation); consumers still verify
-    // on retrieve, the server is not a trusted authority.
-    let device_pubkey: [u8; 32] = hex::decode(&req.device_id)
-        .ok()
-        .and_then(|b| b.try_into().ok())
-        .ok_or_else(|| ApiError::bad("device_id: must be hex of a 32-byte key"))?;
-    let payload = BASE64
-        .decode(&req.payload)
-        .map_err(|_| ApiError::bad("payload: not valid base64"))?;
-    let signature: [u8; 64] = BASE64
-        .decode(&req.signature)
-        .ok()
-        .and_then(|b| b.try_into().ok())
-        .ok_or_else(|| ApiError::bad("signature: must be base64 of 64 bytes"))?;
-
-    let verifying_key = VerifyingKey::from_bytes(&device_pubkey)
-        .map_err(|_| ApiError::bad("device_id: not a valid ed25519 key"))?;
-    verifying_key
-        .verify_strict(&payload, &Signature::from_bytes(&signature))
-        .map_err(|_| ApiError::bad("signature: verification failed"))?;
-
-    store
-        .insert(
-            &req.device_id,
-            &StoredKeyPackageBundle {
-                payload,
-                signature: signature.to_vec(),
-            },
-        )
-        .await
-        .map_err(ApiError::internal)?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn fetch(
-    State(store): State<Arc<Store>>,
-    Path(device_id): Path<String>,
-) -> Result<Json<FetchResponse>, ApiError> {
-    let Some(bundle) = store
-        .latest(&device_id)
-        .await
-        .map_err(ApiError::internal)?
-    else {
-        return Err(ApiError::not_found("no keypackage for device"));
-    };
-    Ok(Json(FetchResponse {
-        payload: BASE64.encode(&bundle.payload),
-        signature: BASE64.encode(&bundle.signature),
-    }))
-}
-
-/// Request body for publishing a signed device-list bundle under an account.
+/// A signed account device-list bundle.
 ///
 /// The `payload` is intentionally opaque to the server. Clients are expected
 /// to encode a lamport-timestamped list of device (LocalIdentity) Ed25519
@@ -123,6 +52,76 @@ pub struct SubmitAccountRequest {
     pub signature: String,
 }
 
+impl SubmitAccountRequest {
+    /// Decode the JSON body's hex + base64 fields into a [`Bundle`].
+    pub fn decode(&self) -> Result<Bundle, BundleError> {
+        decode_bundle(&self.account_pub, &self.payload, &self.signature)
+    }
+}
+
+/// This wire spells a bundle out in text: the key as hex, payload and signature
+/// as base64. Undo that here — the delivery wire hands over raw bytes already —
+/// and let [`Bundle::from_bytes`] enforce the lengths.
+fn decode_bundle(
+    key_hex: &str,
+    payload_b64: &str,
+    signature_b64: &str,
+) -> Result<Bundle, BundleError> {
+    let key = hex::decode(key_hex).map_err(|_| BundleError::Invalid("key: must be hex"))?;
+    let payload = BASE64
+        .decode(payload_b64)
+        .map_err(|_| BundleError::Invalid("payload: not valid base64"))?;
+    let signature = BASE64
+        .decode(signature_b64)
+        .map_err(|_| BundleError::Invalid("signature: not valid base64"))?;
+    Bundle::from_bytes(&key, &payload, &signature)
+}
+
+#[derive(Debug, Serialize)]
+pub struct FetchKeyPackageResponse {
+    /// base64 of the stored payload; consumers verify `signature` over it.
+    pub payload: String,
+    pub signature: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ErrorBody {
+    error: String,
+}
+
+pub fn router(store: Arc<Store>) -> Router {
+    Router::new()
+        .route("/v0/keypackage", post(submit_key_package))
+        .route("/v0/keypackage/:device_id", get(fetch_key_package))
+        .route("/v0/account", post(submit_account))
+        .route("/v0/account/:account_pub", get(fetch_account))
+        .with_state(store)
+}
+
+/// `POST /v0/keypackage` — the same bundle the logos-delivery subscriber
+/// accepts, in JSON rather than protobuf; verification and storage live in
+/// [`bundle::apply_keypackage`].
+async fn submit_key_package(
+    State(store): State<Arc<Store>>,
+    Json(req): Json<SubmitKeyPackageRequest>,
+) -> Result<StatusCode, ApiError> {
+    bundle::apply_keypackage(&store, &req.decode()?).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn fetch_key_package(
+    State(store): State<Arc<Store>>,
+    Path(device_id): Path<String>,
+) -> Result<Json<FetchKeyPackageResponse>, ApiError> {
+    let Some(bundle) = store.latest(&device_id).await.map_err(ApiError::internal)? else {
+        return Err(ApiError::not_found("no keypackage for device"));
+    };
+    Ok(Json(FetchKeyPackageResponse {
+        payload: BASE64.encode(&bundle.payload),
+        signature: BASE64.encode(&bundle.signature),
+    }))
+}
+
 #[derive(Debug, Serialize)]
 pub struct FetchAccountResponse {
     /// base64 of the stored payload.
@@ -137,53 +136,14 @@ pub struct FetchAccountResponse {
 ///
 /// The server verifies the Ed25519 signature and then stores exactly one blob
 /// per `account_pub`, replacing any previous value. Clients should re-publish
-/// whenever they add or rotate LocalIdentities.
+/// whenever they add or rotate LocalIdentities. The same submission the
+/// logos-delivery subscriber accepts, in JSON rather than protobuf; the shared
+/// rules live in [`bundle::apply_account`].
 async fn submit_account(
     State(store): State<Arc<Store>>,
     Json(req): Json<SubmitAccountRequest>,
 ) -> Result<StatusCode, ApiError> {
-    let account_pubkey: [u8; 32] = hex::decode(&req.account_pub)
-        .ok()
-        .and_then(|b| b.try_into().ok())
-        .ok_or_else(|| ApiError::bad("account_pub: must be hex of a 32-byte key"))?;
-    let payload = BASE64
-        .decode(&req.payload)
-        .map_err(|_| ApiError::bad("payload: not valid base64"))?;
-    let signature: [u8; 64] = BASE64
-        .decode(&req.signature)
-        .ok()
-        .and_then(|b| b.try_into().ok())
-        .ok_or_else(|| ApiError::bad("signature: must be base64 of 64 bytes"))?;
-
-    let verifying_key = VerifyingKey::from_bytes(&account_pubkey)
-        .map_err(|_| ApiError::bad("account_pub: not a valid ed25519 key"))?;
-    verifying_key
-        .verify_strict(&payload, &Signature::from_bytes(&signature))
-        .map_err(|_| ApiError::bad("signature: verification failed"))?;
-
-    // Read the bundle's lamport so the store can reject replays. Safe to trust:
-    // the signature over `payload` was just verified, so the lamport can't be
-    // forged without the account key.
-    let lamport = crate::store::payload_lamport(&payload)
-        .ok_or_else(|| ApiError::bad("payload: too short to contain a lamport header"))?;
-
-    let applied = store
-        .upsert_account(
-            &req.account_pub,
-            lamport,
-            &StoredAccountBundle {
-                payload,
-                signature: signature.to_vec(),
-                updated_at: 0, // filled in by store
-            },
-        )
-        .await
-        .map_err(ApiError::internal)?;
-    if !applied {
-        return Err(ApiError::conflict(
-            "stale bundle: lamport is not newer than the stored one",
-        ));
-    }
+    bundle::apply_account(&store, &req.decode()?).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -215,21 +175,9 @@ struct ApiError {
 }
 
 impl ApiError {
-    fn bad(msg: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::BAD_REQUEST,
-            message: msg.into(),
-        }
-    }
     fn not_found(msg: impl Into<String>) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
-            message: msg.into(),
-        }
-    }
-    fn conflict(msg: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::CONFLICT,
             message: msg.into(),
         }
     }
@@ -238,6 +186,22 @@ impl ApiError {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: "internal error".into(),
+        }
+    }
+}
+
+impl From<BundleError> for ApiError {
+    fn from(err: BundleError) -> Self {
+        match err {
+            BundleError::Invalid(msg) => Self {
+                status: StatusCode::BAD_REQUEST,
+                message: msg.into(),
+            },
+            BundleError::Stale => Self {
+                status: StatusCode::CONFLICT,
+                message: err.to_string(),
+            },
+            BundleError::Internal(inner) => Self::internal(inner),
         }
     }
 }

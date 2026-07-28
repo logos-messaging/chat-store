@@ -1,14 +1,23 @@
-//! Testnet KeyPackage Registry HTTP service.
+//! Testnet KeyPackage Registry service.
 //!
-//! Throwaway service for issue #110 — replaced by λLEZ in v0.3. Intentionally
-//! self-contained: depends only on axum + sqlite + ed25519, no libchat core.
+//! Throwaway service for issue #110 — replaced by λLEZ in v0.3. No libchat-core
+//! dependency; the embedded logos-delivery node comes from libchat's transport
+//! crate, pulled in as a pinned git dependency.
 //!
-//! Wire:
+//! Submissions arrive on either write path — both feed the same verification +
+//! storage pipeline (`bundle`):
+//!   - HTTP POST (below), synchronous and acknowledged;
+//!   - logos-delivery subscription (`delivery`, disable with `--no-delivery`):
+//!     clients publish protobuf submissions on the store content topics.
+//!
+//! HTTP wire:
 //!   POST /v0/keypackage             — submit a signed keypackage bundle
 //!   GET  /v0/keypackage/{device_id} — fetch the latest stored keypackage bundle
 //!   POST /v0/account                — upsert a signed account device-list bundle
 //!   GET  /v0/account/{account_pub}  — fetch the account device-list bundle
 
+mod bundle;
+mod delivery;
 mod handlers;
 mod store;
 
@@ -24,7 +33,10 @@ use tracing_subscriber::EnvFilter;
 use store::Store;
 
 #[derive(Parser, Debug)]
-#[command(name = "chat-store", about = "Testnet Chat Store (KeyPackage + account directory)")]
+#[command(
+    name = "chat-store",
+    about = "Testnet Chat Store (KeyPackage + account directory)"
+)]
 struct Cli {
     /// Address to bind the HTTP server.
     #[arg(long, default_value = "0.0.0.0:8080")]
@@ -45,6 +57,20 @@ struct Cli {
     /// How often the prune task runs.
     #[arg(long, default_value_t = 3600)]
     prune_interval_secs: u64,
+
+    /// Disable the logos-delivery subscriber; submissions then arrive over
+    /// HTTP POST only.
+    #[arg(long)]
+    no_delivery: bool,
+
+    /// logos-delivery network preset the subscriber joins.
+    #[arg(long, default_value = "logos.dev")]
+    preset: String,
+
+    /// TCP + discv5 UDP port for the embedded logos-delivery node
+    /// (0 = OS-assigned).
+    #[arg(long, default_value_t = 0)]
+    p2p_port: u16,
 }
 
 #[tokio::main]
@@ -57,11 +83,7 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    let store = Arc::new(
-        Store::open(&cli.db)
-            .await
-            .context("failed to open store")?,
-    );
+    let store = Arc::new(Store::open(&cli.db).await.context("failed to open store")?);
 
     let prune_store = store.clone();
     let max_per_id = cli.max_per_identity;
@@ -79,6 +101,23 @@ async fn main() -> Result<()> {
             }
         }
     });
+
+    if !cli.no_delivery {
+        // Blocks for a few seconds while the node starts and finds peers;
+        // deliberately before serving HTTP so a subscriber failure is a
+        // startup error, not a silent half-running store.
+        delivery::start(
+            store.clone(),
+            delivery::P2pConfig {
+                preset: cli.preset.clone(),
+                port: cli.p2p_port,
+                log_level: "ERROR".into(),
+            },
+            tokio::runtime::Handle::current(),
+        )
+        .context("failed to start logos-delivery ingestion")?;
+        tracing::info!("logos-delivery ingestion running (preset={})", cli.preset);
+    }
 
     let app = handlers::router(store);
     let listener = tokio::net::TcpListener::bind(cli.bind)
