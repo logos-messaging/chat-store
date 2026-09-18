@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use account_log::{AccountRecord, AccountRecordUpdate, Outcome, SignedAccountLog};
 use anyhow::{Context, Result};
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
@@ -181,6 +182,58 @@ impl Store {
         .fetch_optional(&self.pool)
         .await?;
         Ok(row)
+    }
+
+    /// Store `candidate` as its account's log if it strictly extends the one on
+    /// file, returning how the two related. [`AccountRecord::update`] decides —
+    /// the rule consumers apply to their own copy — and anything but
+    /// [`Outcome::Updated`] leaves the row, and its `updated_at`, untouched.
+    ///
+    /// As in [`Store::upsert_account`], the read and the write share one
+    /// transaction under the write lock, so two publishes cannot both extend
+    /// the same stored log.
+    pub async fn put_account_log(&self, candidate: AccountRecord) -> Result<Outcome> {
+        let _write_guard = self.write_lock.lock().await;
+        let updated_at = now_ms() as i64;
+        let account_pub = candidate.addr().to_string();
+
+        let mut tx = self.pool.begin().await?;
+        let stored = sqlx::query_scalar::<_, Vec<u8>>(
+            "SELECT signed_log FROM account_logs WHERE account_pub = ?",
+        )
+        .bind(&account_pub)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let update = match stored {
+            None => AccountRecordUpdate {
+                outcome: Outcome::Updated,
+                record: candidate,
+            },
+            Some(stored) => AccountRecord::new(
+                candidate.addr().clone(),
+                SignedAccountLog::from_bytes(&stored)?,
+            )
+            .context("stored account log no longer verifies")?
+            .update(candidate.signed_log().clone()),
+        };
+        if update.outcome != Outcome::Updated {
+            // Dropping `tx` rolls the (read-only) transaction back.
+            return Ok(update.outcome);
+        }
+        sqlx::query(
+            "INSERT INTO account_logs (account_pub, updated_at, signed_log)
+             VALUES (?, ?, ?)
+             ON CONFLICT(account_pub) DO UPDATE SET
+               updated_at = excluded.updated_at,
+               signed_log = excluded.signed_log",
+        )
+        .bind(&account_pub)
+        .bind(updated_at)
+        .bind(update.record.signed_log().to_bytes())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(Outcome::Updated)
     }
 
     /// Drops account bundles that have not been refreshed within `retention`.
