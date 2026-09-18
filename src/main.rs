@@ -16,6 +16,7 @@
 //!   POST /v0/account                — upsert a signed account device-list bundle
 //!   GET  /v0/account/{account_pub}  — fetch the account device-list bundle
 //!   POST /v1/account/{account_addr} — publish a signed account log
+//!   GET  /v1/account/{account_addr} — fetch the stored account log
 
 mod bundle;
 mod delivery;

@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use account_log::{AccountRecord, AccountRecordUpdate, Outcome, SignedAccountLog};
+use account_log::{AccountAddr, AccountRecord, AccountRecordUpdate, Outcome, SignedAccountLog};
 use anyhow::{Context, Result};
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
@@ -234,6 +234,18 @@ impl Store {
         .await?;
         tx.commit().await?;
         Ok(Outcome::Updated)
+    }
+
+    /// Returns `addr`'s stored account log as its `signature || payload`
+    /// artifact, or `None` if it has not published one.
+    pub async fn get_account_log(&self, addr: &AccountAddr) -> Result<Option<Vec<u8>>> {
+        let row = sqlx::query_scalar::<_, Vec<u8>>(
+            "SELECT signed_log FROM account_logs WHERE account_pub = ?",
+        )
+        .bind(addr.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
     }
 
     /// Drops account bundles that have not been refreshed within `retention`.
