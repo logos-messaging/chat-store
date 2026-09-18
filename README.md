@@ -250,6 +250,16 @@ that fails to verify, or a log that does not decode (the error says which rule i
 breaks); and `409` when the stored log already extends it (stale) or it rewrites
 the stored log instead of appending to it (fork).
 
+### `GET /v1/account/{account_addr}`
+
+Returns the stored log as raw bytes (`application/octet-stream`), in the same
+`signature || payload` form the POST takes, or `404` if the account has not
+published one; `400` on an invalid `account_addr`.
+
+Consumers verify the signature under `account_addr` and check that the log
+extends any log they already hold before using it — the crate's `AccountRecord`
+does both.
+
 ## Storage & retention
 
 Three SQLite tables: `keypackages` keyed by `device_id`, and `account_bundles`
