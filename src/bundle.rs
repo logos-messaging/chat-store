@@ -367,10 +367,23 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, BundleError::Stale));
-        let err = apply_account_log(&store, addr, log(&[3, 2, 1]))
+        let err = apply_account_log(&store, addr.clone(), log(&[3, 2, 1]))
             .await
             .unwrap_err();
         assert!(matches!(err, BundleError::Forked));
+
+        // Neither refusal touched the stored log: it is the last one accepted,
+        // served back as the artifact it was published as.
+        let stored = store.get_account_log(&addr).await.unwrap().unwrap();
+        assert_eq!(stored, log(&[1, 2]).to_bytes());
+        let never_published = addr_of(&signing_key(7));
+        assert!(
+            store
+                .get_account_log(&never_published)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
