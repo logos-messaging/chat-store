@@ -12,6 +12,10 @@ name = "chat-store"
 path = "src/main.rs"
 
 [dependencies]
+# The account log `/v1/account` stores, and the rule for replacing it. Pinned to
+# the head of logos-chat#226, which is not merged yet: move to a merged rev once
+# it lands.
+account-log = { git = "https://github.com/logos-messaging/logos-chat", rev = "4c301bd60f7fb8fcf770a7776b5a1013787f3e3d" }
 anyhow = "1.0"
 axum = "0.7"
 base64 = "0.22"

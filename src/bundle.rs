@@ -7,6 +7,9 @@
 //! a [`Bundle`]. Verification and storage rules below are therefore identical
 //! no matter which wire carried it.
 
+use account_log::{
+    AccountAddr, AccountLogError, AccountRecord, LogFreshness, Outcome, SignedAccountLog,
+};
 use ed25519_dalek::{Signature, VerifyingKey};
 
 use crate::store::{Store, StoredAccountBundle, StoredKeyPackageBundle};
@@ -15,8 +18,12 @@ use crate::store::{Store, StoredAccountBundle, StoredKeyPackageBundle};
 pub enum BundleError {
     /// Malformed bundle or failed signature verification.
     Invalid(&'static str),
-    /// Valid account bundle whose lamport is not newer than the stored one.
+    /// Authentic account log that does not decode, or breaks the log's rules.
+    MalformedLog(AccountLogError),
+    /// Valid account bundle or log that is not newer than the stored one.
     Stale,
+    /// Valid account log that rewrites the stored one instead of extending it.
+    Forked,
     /// Storage failure.
     Internal(anyhow::Error),
 }
@@ -25,9 +32,9 @@ impl std::fmt::Display for BundleError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BundleError::Invalid(msg) => write!(f, "{msg}"),
-            BundleError::Stale => {
-                write!(f, "stale bundle: lamport is not newer than the stored one")
-            }
+            BundleError::MalformedLog(err) => write!(f, "{err}"),
+            BundleError::Stale => write!(f, "stale bundle: not newer than the stored one"),
+            BundleError::Forked => write!(f, "forked log: does not extend the stored one"),
             BundleError::Internal(err) => write!(f, "internal: {err}"),
         }
     }
@@ -124,10 +131,44 @@ pub async fn apply_account(store: &Store, bundle: &Bundle) -> Result<(), BundleE
     Ok(())
 }
 
+/// Verify and store an account log. An account log is not a [`Bundle`]: the
+/// account-log crate defines how it travels, so a wire decodes it straight
+/// into the crate's types. What is valid and what is newer are the crate's
+/// rules too, the ones consumers apply: the log replaces the stored one only
+/// when it strictly extends it, and resubmitting the stored log is accepted and
+/// changes nothing, so a retried publish is not reported as stale.
+pub async fn apply_account_log(
+    store: &Store,
+    addr: AccountAddr,
+    signed: SignedAccountLog,
+) -> Result<(), BundleError> {
+    // Verify and decode before the store takes its write lock, so junk is
+    // rejected early, as `verify` does for the other bundles.
+    let candidate = AccountRecord::new(addr, signed).map_err(|err| match err {
+        AccountLogError::SignatureInvalid => BundleError::Invalid("signature: verification failed"),
+        err => BundleError::MalformedLog(err),
+    })?;
+
+    match store
+        .put_account_log(candidate)
+        .await
+        .map_err(BundleError::Internal)?
+    {
+        Outcome::Updated | Outcome::Unchanged(LogFreshness::Identical) => Ok(()),
+        Outcome::Unchanged(LogFreshness::Behind) => Err(BundleError::Stale),
+        Outcome::Unchanged(LogFreshness::Diverged) => Err(BundleError::Forked),
+        // The candidate was verified above, and a newer log is `Updated`.
+        other => Err(BundleError::Internal(anyhow::anyhow!(
+            "unexpected account log outcome: {other:?}"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
+    use account_log::{AccountLogDraft, EntryData, SIGNER_CONTEXT};
     use base64::Engine;
     use base64::engine::general_purpose::STANDARD as BASE64;
     use chat_proto::logoschat::store::{AccountSubmissionV1, KeyPackageSubmissionV1};
@@ -175,6 +216,31 @@ mod tests {
         p.push(1u8); // version
         p.extend_from_slice(&lamport.to_le_bytes());
         p
+    }
+
+    /// An account log endorsing one device key per seed, in order, encoded by
+    /// the account-log crate as a client would publish it.
+    fn account_log(device_seeds: &[u8]) -> Vec<u8> {
+        let mut draft = AccountLogDraft::new();
+        for &seed in device_seeds {
+            let device = signing_key(seed).verifying_key().to_bytes();
+            draft
+                .add(SIGNER_CONTEXT.clone(), EntryData::Ed25519Key(device))
+                .unwrap();
+        }
+        draft.log().encode().unwrap().as_bytes().to_vec()
+    }
+
+    /// `payload` signed by `key`, read from the artifact the account-log crate
+    /// transmits: `signature || payload`.
+    fn signed_log(key: &SigningKey, payload: &[u8]) -> SignedAccountLog {
+        let mut artifact = key.sign(payload).to_bytes().to_vec();
+        artifact.extend_from_slice(payload);
+        SignedAccountLog::from_bytes(&artifact).unwrap()
+    }
+
+    fn addr_of(key: &SigningKey) -> AccountAddr {
+        AccountAddr::try_from(key.verifying_key().as_bytes().as_slice()).unwrap()
     }
 
     fn account_submission(key: &SigningKey, payload: &[u8]) -> Bundle {
@@ -273,5 +339,63 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, BundleError::Stale));
+    }
+
+    #[tokio::test]
+    async fn account_log_must_extend_the_stored_one() {
+        let store = Store::open(Path::new(":memory:")).await.unwrap();
+        let key = signing_key(4);
+        let addr = addr_of(&key);
+        let log = |devices: &[u8]| signed_log(&key, &account_log(devices));
+
+        // The empty log is valid: an account that has endorsed nothing yet.
+        apply_account_log(&store, addr.clone(), log(&[]))
+            .await
+            .unwrap();
+        apply_account_log(&store, addr.clone(), log(&[1]))
+            .await
+            .unwrap();
+        // Resubmitting the stored log (a retried publish) is accepted.
+        apply_account_log(&store, addr.clone(), log(&[1]))
+            .await
+            .unwrap();
+        apply_account_log(&store, addr.clone(), log(&[1, 2]))
+            .await
+            .unwrap();
+
+        let err = apply_account_log(&store, addr.clone(), log(&[1]))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, BundleError::Stale));
+        let err = apply_account_log(&store, addr, log(&[3, 2, 1]))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, BundleError::Forked));
+    }
+
+    #[tokio::test]
+    async fn account_log_must_be_authentic_and_well_formed() {
+        let store = Store::open(Path::new(":memory:")).await.unwrap();
+        let key = signing_key(5);
+
+        // Signed by another key: refused on the signature.
+        let forged = signed_log(&signing_key(6), &account_log(&[1]));
+        let err = apply_account_log(&store, addr_of(&key), forged)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            BundleError::Invalid("signature: verification failed")
+        ));
+
+        // Authentic, but a v0 device-list bundle rather than an account log.
+        let v0_bundle = signed_log(&key, &account_payload(1));
+        let err = apply_account_log(&store, addr_of(&key), v0_bundle)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            BundleError::MalformedLog(AccountLogError::Malformed(_))
+        ));
     }
 }

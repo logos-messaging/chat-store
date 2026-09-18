@@ -3,6 +3,17 @@
 version = 4
 
 [[package]]
+name = "account-log"
+version = "0.1.0"
+source = "git+https://github.com/logos-messaging/logos-chat?rev=4c301bd60f7fb8fcf770a7776b5a1013787f3e3d#4c301bd60f7fb8fcf770a7776b5a1013787f3e3d"
+dependencies = [
+ "ed25519-dalek",
+ "hex",
+ "rand_core",
+ "thiserror",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -236,6 +247,7 @@ dependencies = [
 name = "chat-store"
 version = "0.1.0"
 dependencies = [
+ "account-log",
  "anyhow",
  "axum",
  "base64",
@@ -458,6 +470,7 @@ checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
 dependencies = [
  "curve25519-dalek",
  "ed25519",
+ "rand_core",
  "serde",
  "sha2",
  "subtle",
