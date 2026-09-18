@@ -139,7 +139,7 @@ mod tests {
     use super::*;
     // The JSON body lives with the HTTP wire that owns it; this test asserts
     // that wire and the protobuf one decode to the same bundle.
-    use crate::handlers::SubmitKeyPackageRequest;
+    use crate::handlers::keypackage::SubmitKeyPackageRequest;
 
     /// Must match `BUNDLE_DOMAIN` in `store.rs` (kept private there).
     const ACCOUNT_BUNDLE_DOMAIN: &[u8] = b"libchat:account-device-bundle\0";
