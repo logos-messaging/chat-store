@@ -77,7 +77,11 @@ impl From<BundleError> for ApiError {
                 status: StatusCode::BAD_REQUEST,
                 message: msg.into(),
             },
-            BundleError::Stale => Self {
+            BundleError::MalformedLog(_) => Self {
+                status: StatusCode::BAD_REQUEST,
+                message: err.to_string(),
+            },
+            BundleError::Stale | BundleError::Forked => Self {
                 status: StatusCode::CONFLICT,
                 message: err.to_string(),
             },

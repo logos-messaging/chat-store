@@ -14,7 +14,8 @@ libchat's transport crate, pulled in as a pinned git dependency).
 Submissions arrive on either of two write paths feeding the same verification +
 storage pipeline:
 
-- **HTTP POST** (`/v0/keypackage`, `/v0/account`) — synchronous and acknowledged;
+- **HTTP POST** (`/v0/keypackage`, `/v0/account`, `/v1/account`) — synchronous
+  and acknowledged;
 - **logos-delivery subscription** — clients publish protobuf submissions on the
   store's content topics and the server picks them up from the network (see
   [Delivery ingestion](#delivery-ingestion)).
@@ -215,13 +216,48 @@ Returns the stored bundle for that account, or `404`:
 `updated_at` is the server's last-upsert time in Unix ms. Consumers verify
 `signature` over `payload` under `account_pub`'s key, then decode the device list.
 
+## Account log endpoints (v1)
+
+`/v1/account` replaces the v0 device-list bundle with an **append-only account
+log**. The account key signs the whole log on every update, and a newer log is a
+longer one that keeps every earlier byte of the one before it. The format and
+the rules are the `account-log` crate's (logos-chat, `account/account-log`),
+which the server depends on directly, so it validates and compares logs exactly
+as consumers do.
+
+HTTP only for now: there is no delivery topic for account logs yet.
+
+### `POST /v1/account/{account_addr}`
+
+The body is the signed log as raw bytes (`application/octet-stream`), exactly as
+the crate transmits it (`SignedAccountLog::to_bytes`):
+
+```text
+signature : 64-byte ed25519 signature over payload by the account key
+payload   : the encoded account log
+```
+
+The log does not name its account, so the path does: `account_addr` is the
+account's AccountAddr, 64 lowercase hex characters of its ed25519 verifying key.
+
+The server verifies the signature under `account_addr` and decodes the log, then
+stores it only if it strictly extends the stored one: the stored payload is a
+prefix of the new one.
+
+Returns `204` when the log is stored, and also when it is exactly the stored log,
+so a retried publish succeeds; `400` on an invalid `account_addr`, a signature
+that fails to verify, or a log that does not decode (the error says which rule it
+breaks); and `409` when the stored log already extends it (stale) or it rewrites
+the stored log instead of appending to it (fork).
+
 ## Storage & retention
 
-Two SQLite tables: `keypackages` keyed by `device_id`, and `account_bundles`
-(one row per `account_pub`). A background task runs every `--prune-interval-secs`,
-dropping keypackage bundles older than `--retention-days` (keeping at most
-`--max-per-identity` per `device_id`) and dropping account bundles not refreshed
-within `--retention-days`. The schema is an internal detail and may change.
+Three SQLite tables: `keypackages` keyed by `device_id`, and `account_bundles`
+(v0) and `account_logs` (v1), each one row per `account_pub`. A background task
+runs every `--prune-interval-secs`, dropping keypackage bundles older than
+`--retention-days` (keeping at most `--max-per-identity` per `device_id`) and
+dropping account bundles not refreshed within `--retention-days`. Account logs
+are not pruned. The schema is an internal detail and may change.
 
 ## Smoke test
 
